@@ -1,0 +1,677 @@
+\documentclass[aspectratio=169, 10pt]{beamer}
+
+% ── Theme & colors ────────────────────────────────────────────────────────────
+\usetheme{Madrid}
+\usecolortheme{default}
+\definecolor{primary}{RGB}{0,84,166}
+\definecolor{accent}{RGB}{255,140,0}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{darkgreen}{RGB}{0,128,64}
+\definecolor{darkred}{RGB}{180,0,0}
+\definecolor{whitesoft}{RGB}{220,220,220}
+
+\setbeamercolor{palette primary}{bg=primary,fg=white}
+\setbeamercolor{palette secondary}{bg=primary!80,fg=white}
+\setbeamercolor{palette tertiary}{bg=primary!60,fg=white}
+\setbeamercolor{palette quaternary}{bg=primary,fg=white}
+\setbeamercolor{frametitle}{bg=primary,fg=white}
+\setbeamercolor{title}{fg=white}
+\setbeamercolor{block title}{bg=primary,fg=white}
+\setbeamercolor{block title alerted}{bg=accent,fg=white}
+\setbeamercolor{alerted text}{fg=accent}
+\setbeamercolor{structure}{fg=primary}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{
+  shapes.geometric,
+  arrows.meta,
+  positioning,
+  fit,
+  backgrounds,
+  decorations.pathreplacing
+}
+\usepackage{listings}
+\usepackage{multirow}
+\usepackage{colortbl}
+\usepackage{graphicx}
+\usepackage{textcomp}
+
+% ── Listings style ────────────────────────────────────────────────────────────
+\lstset{
+  basicstyle=\ttfamily\tiny,
+  backgroundcolor=\color{lightgray},
+  frame=single,
+  framerule=0.4pt,
+  breaklines=true,
+  columns=fullflexible
+}
+
+% ── TikZ styles ───────────────────────────────────────────────────────────────
+\tikzset{
+  arrow/.style={-{Stealth[length=6pt]}, thick, color=primary},
+  box/.style={
+    rectangle, rounded corners=4pt, draw=primary, thick,
+    fill=primary!10, text width=2.8cm, align=center,
+    minimum height=0.85cm, font=\small\bfseries
+  },
+  boxsmall/.style={
+    rectangle, rounded corners=3pt, draw=primary, thick,
+    fill=primary!8, text width=2.2cm, align=center,
+    minimum height=0.65cm, font=\scriptsize
+  },
+  oldbox/.style={
+    rectangle, rounded corners=3pt, draw=darkred, thick,
+    fill=darkred!8, text width=3.5cm, align=center,
+    minimum height=0.65cm, font=\scriptsize
+  },
+  newbox/.style={
+    rectangle, rounded corners=3pt, draw=darkgreen, thick,
+    fill=darkgreen!8, text width=3.5cm, align=center,
+    minimum height=0.65cm, font=\scriptsize
+  },
+}
+
+% ── Metadata ──────────────────────────────────────────────────────────────────
+\title[RAG Hybride -- Extraction Financiere]{%
+  \textbf{Systeme RAG Hybride}\\[4pt]
+  \large Extraction Automatique de Donnees Financieres\\
+  depuis les Rapports AMMC
+}
+\author[Presentation]{%
+  \textbf{Nom Prenom}\\[4pt]
+  \small Encadrant~: Pr.~Nom Encadrant
+}
+\institute[]{Filiere -- Etablissement}
+\date{Avril 2026}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+% ══════════════════════════════════════════════════════════════════════════════
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\begin{frame}[plain]
+  \begin{tikzpicture}[overlay, remember picture]
+    \fill[primary] (current page.north west) rectangle
+                   ([yshift=-3.6cm]current page.north east);
+    \fill[accent]  ([yshift=-3.6cm]current page.north west) rectangle
+                   ([yshift=-3.85cm]current page.north east);
+  \end{tikzpicture}
+  \vspace{0.9cm}
+  \titlepage
+\end{frame}
+
+% ── Plan ──────────────────────────────────────────────────────────────────────
+\begin{frame}{Plan de la presentation}
+  \tableofcontents[hideallsubsections]
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Contexte et Problematique}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Contexte et Problematique}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+      \begin{alertblock}{Probleme constate}
+        \begin{itemize}
+          \item L'AMMC publie des centaines de \textbf{rapports financiers PDF}
+                chaque annee (bilans, CPC, flux de tresorerie\ldots)
+          \item L'extraction manuelle est \textbf{longue, couteuse et sujette
+                aux erreurs}
+          \item Les PDFs sont heterogenes :
+                \begin{itemize}\small
+                  \item Documents natifs vs \textbf{scannes}
+                  \item Pages multi-tableaux
+                  \item Normes \textbf{CGNC} et \textbf{PCEC} (secteur bancaire)
+                \end{itemize}
+        \end{itemize}
+      \end{alertblock}
+
+    \column{0.45\textwidth}
+      \begin{block}{Objectif du projet}
+        Construire un systeme \textbf{RAG Hybride} capable de :
+        \begin{enumerate}\small
+          \item Ingerer automatiquement les PDFs
+          \item Localiser les tableaux par \textbf{recherche semantique}
+          \item Extraire les donnees via une \textbf{cascade LLM + methodes classiques}
+          \item Valider et exporter en \textbf{Excel structure}
+        \end{enumerate}
+      \end{block}
+      \vspace{0.3cm}
+      \begin{tikzpicture}
+        \node[
+          fill=accent!20, draw=accent, rounded corners=4pt,
+          font=\small, text width=5.4cm, align=center, inner sep=7pt
+        ]{
+          Emetteurs cibles : Attijariwafa, BMCI,\\Addoha, AGMA\ldots
+        };
+      \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Architecture Generale}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Architecture Generale du Systeme}
+  \centering
+  \begin{tikzpicture}[node distance=0.5cm and 0.95cm, scale=0.87, transform shape]
+    \node[box, fill=accent!20, draw=accent] (sc)  {Scraper AMMC\\{\tiny Download PDF}};
+    \node[box, right=of sc]                (ing) {Ingestion\\{\tiny Chunks + Embed.}};
+    \node[box, right=of ing]               (idx) {Index FAISS\\{\tiny Vecteurs}};
+    \node[box, right=of idx]               (ret) {Retrieval\\{\tiny Rech. semantique}};
+    \node[box, right=of ret, fill=darkgreen!15, draw=darkgreen]
+                                           (ext) {Extraction\\{\tiny Cascade LLM}};
+    \node[box, right=of ext, fill=accent!20, draw=accent]
+                                           (exp) {Export Excel\\{\tiny .xlsx formate}};
+
+    \draw[arrow] (sc)--(ing);
+    \draw[arrow] (ing)--(idx);
+    \draw[arrow] (idx)--(ret);
+    \draw[arrow] (ret)--(ext);
+    \draw[arrow] (ext)--(exp);
+
+    \node[font=\tiny, color=gray, below=0.22cm of sc]  {Phase 0};
+    \node[font=\tiny, color=gray, below=0.22cm of ing] {Phase 1};
+    \node[font=\tiny, color=gray, below=0.22cm of idx] {Phase 1};
+    \node[font=\tiny, color=gray, below=0.22cm of ret] {Phase 2};
+    \node[font=\tiny, color=gray, below=0.22cm of ext] {Phase 3};
+    \node[font=\tiny, color=gray, below=0.22cm of exp] {Phase 4};
+
+    \draw[
+      decorate,
+      decoration={brace, mirror, amplitude=6pt},
+      thick, color=primary
+    ]
+    ([yshift=-0.75cm]ing.south west) -- ([yshift=-0.75cm]ret.south east)
+    node[midway, below=9pt, font=\small\bfseries, color=primary]{RAG Pipeline};
+  \end{tikzpicture}
+
+  \vspace{0.55cm}
+  \begin{columns}[T]
+    \column{0.23\textwidth}
+      \centering\small\textbf{[DB] Donnees}\\
+      \tiny pdfplumber $\cdot$ PyMuPDF
+    \column{0.23\textwidth}
+      \centering\small\textbf{[~] Embedding}\\
+      \tiny all-MiniLM-L6-v2
+    \column{0.23\textwidth}
+      \centering\small\textbf{[Q] Retrieval}\\
+      \tiny FAISS cosine similarity
+    \column{0.23\textwidth}
+      \centering\small\textbf{[AI] LLM}\\
+      \tiny Groq $\cdot$ Gemini $\cdot$ OpenAI
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Etapes du Pipeline}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Etape 1 --- Scraping et Ingestion}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+      \begin{block}{Scraper AMMC (\texttt{scraper.py})}
+        \textbf{Strategie de recuperation (priorite)} :
+        \begin{enumerate}\small
+          \item Cache local \texttt{.pdf}
+          \item Overrides manuels (\texttt{pdf\_overrides.json})
+          \item Parsing du formulaire AMMC (Emetteur + Annee)
+          \item Fallback page de la liste des emetteurs
+        \end{enumerate}
+      \end{block}
+
+    \column{0.48\textwidth}
+      \begin{block}{Ingestion (\texttt{ingest.py})}
+        \textbf{Deux modes d'extraction} :
+        \begin{itemize}\small
+          \item \textbf{Full} (pdfplumber) --- preserve les tableaux Markdown
+          \item \textbf{Fast} (PyMuPDF) --- 5--10$\times$ plus rapide
+        \end{itemize}
+        \textbf{Sortie} :
+        \begin{itemize}\small
+          \item Chunks de 512 caract. + tableaux complets
+          \item Metadata : \{page, kind, section\_hint\}
+          \item \texttt{embeddings.npy} + \texttt{metadata.json}
+        \end{itemize}
+      \end{block}
+  \end{columns}
+
+  \vspace{0.3cm}
+  \begin{tikzpicture}[scale=0.85, transform shape, node distance=0.45cm and 0.75cm]
+    \node[boxsmall, fill=accent!15, draw=accent] (pdf)   {PDF AMMC};
+    \node[boxsmall, right=of pdf]                (chk)   {Chunking\\{\tiny 512 chars}};
+    \node[boxsmall, right=of chk]                (emb)   {Embedding\\{\tiny MiniLM-L6}};
+    \node[boxsmall, right=of emb]                (fss)   {Index FAISS\\{\tiny .npy + .json}};
+    \node[boxsmall, right=of fss, fill=darkgreen!15, draw=darkgreen]
+                                                 (ok)    {Pret pour\\Retrieval};
+    \draw[arrow] (pdf)--(chk);
+    \draw[arrow] (chk)--(emb);
+    \draw[arrow] (emb)--(fss);
+    \draw[arrow] (fss)--(ok);
+  \end{tikzpicture}
+
+  \vspace{0.2cm}
+  \small\textbf{Detection de section} : 23 regles par frequence de mots-cles
+  (BILAN ACTIF, BILAN PASSIF, CPC --- normes CGNC \& PCEC)
+\end{frame}
+
+%──────────────────────────────────────────────────────────────────────────────
+
+\begin{frame}{Etape 2 --- Recherche Semantique (Retrieval)}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+      \begin{block}{SimpleVectorRetriever (\texttt{retriever.py})}
+        \begin{enumerate}\small
+          \item Encodage de la requete avec \textbf{MiniLM-L6-v2}
+          \item \textbf{Similarite cosinus} sur l'index FAISS
+          \item Retourne les \textbf{top-K chunks} (defaut K=8)
+                avec score de pertinence
+          \item Filtrage optionnel par \texttt{kind} : text | table
+        \end{enumerate}
+      \end{block}
+
+      \begin{alertblock}{Classification d'intention}
+        Heuristique sur les mots-cles de la question :\\
+        \small $\rightarrow$ (intent, table\_type)\\
+        \textit{ex. : ``table\_reconstruction'', ``bilan\_actif''}
+      \end{alertblock}
+
+    \column{0.44\textwidth}
+      \centering
+      \begin{tikzpicture}[scale=0.80, transform shape, node distance=0.45cm]
+        \node[box, fill=accent!15, draw=accent, text width=3.5cm]
+              (q)   {``Bilan actif 2024 ?''};
+        \node[box, below=of q, text width=3.5cm]
+              (enc) {Encodage\\{\tiny MiniLM-L6-v2}};
+        \node[box, below=of enc, text width=3.5cm]
+              (sim) {Similarite cosinus\\{\tiny FAISS}};
+        \node[box, below=of sim, fill=darkgreen!15, draw=darkgreen, text width=3.5cm]
+              (res) {Top-8 chunks\\{\tiny + section\_hint}};
+        \draw[arrow] (q)  --(enc);
+        \draw[arrow] (enc)--(sim);
+        \draw[arrow] (sim)--(res);
+      \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Module d'Extraction}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Etape 3 --- Extraction : Ancienne vs Nouvelle Methode}
+  \begin{columns}[T]
+
+    % ── Ancienne ─────────────────────────────────────────────────────────────
+    \column{0.46\textwidth}
+      \begin{center}
+        \colorbox{darkred!15}{%
+          \parbox{5.0cm}{%
+            \centering\small\bfseries\color{darkred}
+            [Avant] Ancienne Methode
+          }%
+        }
+      \end{center}
+      \vspace{0.1cm}
+      \begin{tikzpicture}[node distance=0.28cm, scale=0.82, transform shape]
+        \node[oldbox] (v1)
+          {Niveau 1 --- Vision LLM\\
+           \tiny Rendu page $\rightarrow$ image $\rightarrow$ LLM};
+        \node[oldbox, below=of v1] (v2)
+          {Niveau 2 --- JSON structure\\
+           \tiny LLM $\rightarrow$ JSON (parsing manuel)};
+        \node[oldbox, below=of v2] (v3)
+          {Niveau 3 --- Markdown\\
+           \tiny LLM $\rightarrow$ Markdown $\rightarrow$ RegEx};
+        \node[oldbox, below=of v3] (v4)
+          {Niveau 4 --- Fallback\\
+           \tiny Cross-provider (multi-LLM)};
+        \node[oldbox, below=of v4, fill=orange!15, draw=orange] (mt)
+          {+ Detection multi-tableaux\\
+           \tiny Segmentation par zones};
+        \node[oldbox, below=of mt, fill=orange!15, draw=orange] (cc)
+          {+ Controle de completude\\
+           \tiny Score 0.0 -- 1.0};
+        \draw[arrow,color=darkred] (v1)--(v2);
+        \draw[arrow,color=darkred] (v2)--(v3);
+        \draw[arrow,color=darkred] (v3)--(v4);
+        \draw[arrow,color=darkred] (v4)--(mt);
+        \draw[arrow,color=darkred] (mt)--(cc);
+      \end{tikzpicture}
+
+    % ── Separator ────────────────────────────────────────────────────────────
+    \column{0.05\textwidth}
+      \vspace{2.2cm}
+      \centering\textcolor{gray}{\Large $\Rightarrow$}
+
+    % ── Nouvelle ─────────────────────────────────────────────────────────────
+    \column{0.46\textwidth}
+      \begin{center}
+        \colorbox{darkgreen!15}{%
+          \parbox{5.0cm}{%
+            \centering\small\bfseries\color{darkgreen}
+            [2025] Nouvelle Methode
+          }%
+        }
+      \end{center}
+      \vspace{0.1cm}
+      \begin{tikzpicture}[node distance=0.28cm, scale=0.82, transform shape]
+        \node[newbox] (n1)
+          {Tier 1 --- Vision LLM\\
+           \tiny Groq Llama-4 / Gemini 2.0 Flash\\
+           \tiny PDF $\rightarrow$ 350 DPI $\rightarrow$ Base64 $\rightarrow$ JSON};
+        \node[newbox, below=of n1] (n2)
+          {Tier 2 --- Structured Output\\
+           \tiny pymupdf4llm $\rightarrow$ Markdown\\
+           \tiny Groq 70B + \textbf{response\_format=json}};
+        \node[newbox, below=of n2] (n3)
+          {Tier 3 --- Markdown Extract\\
+           \tiny LLM Markdown $\rightarrow$ RegEx $\rightarrow$ DataFrame};
+        \node[newbox, below=of n3] (n4)
+          {Tier 4 --- Methodes classiques\\
+           \tiny Camelot (lattice/stream)\\
+           \tiny pdfplumber $\rightarrow$ clustering X/Y};
+        \draw[arrow,color=darkgreen] (n1)--(n2);
+        \draw[arrow,color=darkgreen] (n2)--(n3);
+        \draw[arrow,color=darkgreen] (n3)--(n4);
+      \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+%──────────────────────────────────────────────────────────────────────────────
+
+\begin{frame}{Ameliorations Cles de la Nouvelle Methode}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+      \begin{block}{[+] Structured JSON Output}
+        \begin{itemize}\small
+          \item \textbf{Avant} : Parsing manuel du JSON LLM
+                $\Rightarrow$ erreurs frequentes
+          \item \textbf{Apres} : \texttt{response\_format=json\_object}
+                (Groq) $\Rightarrow$ \textbf{zero erreur de parsing}
+        \end{itemize}
+      \end{block}
+
+      \begin{block}{[+] pymupdf4llm}
+        \begin{itemize}\small
+          \item \textbf{Avant} : pdfplumber brut
+                $\Rightarrow$ perte de structure
+          \item \textbf{Apres} : Markdown fidele a la mise en page
+                $\Rightarrow$ meilleure comprehension LLM
+        \end{itemize}
+      \end{block}
+
+    \column{0.48\textwidth}
+      \begin{block}{[+] Modeles Vision}
+        \begin{itemize}\small
+          \item Llama-4 Maverick (Groq) + Gemini 2.0 Flash
+          \item Gerent les PDFs \textbf{scannes et natifs}
+          \item Selection automatique selon qualite du contenu
+        \end{itemize}
+      \end{block}
+
+      \begin{block}{[+] Fusion de colonnes}
+        \begin{itemize}\small
+          \item Corrige les nombres fragmentes par le separateur
+                de milliers
+          \item Ex. : ``13 157'' + ``683'' $\rightarrow$ ``13 157 683''
+          \item Heuristique : $>50\%$ de fragments $\Rightarrow$ fusion
+        \end{itemize}
+      \end{block}
+  \end{columns}
+\end{frame}
+
+%──────────────────────────────────────────────────────────────────────────────
+
+\begin{frame}{Modules de Validation et Controle Qualite}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+      \begin{block}{Completude (\texttt{completeness\_checker.py})}
+        \begin{itemize}\small
+          \item Verifie la presence des \textbf{ancres critiques}
+                (ex. ``TOTAL DE L'ACTIF'')
+          \item Valide le nombre minimal de lignes/colonnes
+          \item Genere un \textbf{score 0.0 -- 1.0}
+          \item Decide si un tier superieur est necessaire
+        \end{itemize}
+      \end{block}
+
+      \begin{block}{Multi-Tableaux (\texttt{multi\_table\_detector.py})}
+        \begin{itemize}\small
+          \item Detecte 2--3 tableaux sur une meme page
+          \item Extraction par \textbf{zones bornees}
+                (mots-cles + coordonnees)
+          \item Evite l'extraction partielle
+        \end{itemize}
+      \end{block}
+
+    \column{0.48\textwidth}
+      \begin{block}{Extraction Positionnelle (\texttt{positional.py})}
+        \begin{itemize}\small
+          \item Pour tableaux sans bordures visibles
+          \item Clustering \textbf{X/Y} des cellules
+          \item 3 strategies en cascade :
+                \begin{enumerate}\scriptsize
+                  \item pdfplumber natif
+                  \item Clustering X/Y
+                  \item Separation par espaces
+                \end{enumerate}
+        \end{itemize}
+      \end{block}
+
+      \begin{alertblock}{Resultat ExtractionAgent}
+        \texttt{ExtractionResult} contient :\\[3pt]
+        \texttt{df}, \texttt{method\_used},\\
+        \texttt{confidence}, \texttt{completeness\_score}
+      \end{alertblock}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Question-Reponse Semantique}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Pipeline Question-Reponse Semantique}
+  \centering
+  \begin{tikzpicture}[node distance=0.38cm and 0.9cm, scale=0.84, transform shape]
+    \node[box, fill=accent!15, draw=accent] (q)   {Question\\utilisateur};
+    \node[box, right=of q]                  (cls) {Classification\\d'intention};
+    \node[box, right=of cls]                (ret) {Retrieval\\top-8 chunks};
+    \node[box, right=of ret]                (ctx) {Formatage\\contexte};
+    \node[box, right=of ctx, fill=darkgreen!15, draw=darkgreen]
+                                            (llm) {LLM\\GPT / Groq};
+    \node[box, right=of llm, fill=accent!15, draw=accent]
+                                            (ans) {Reponse\\Markdown};
+    \draw[arrow] (q)--(cls);
+    \draw[arrow] (cls)--(ret);
+    \draw[arrow] (ret)--(ctx);
+    \draw[arrow] (ctx)--(llm);
+    \draw[arrow] (llm)--(ans);
+  \end{tikzpicture}
+
+  \vspace{0.45cm}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+      \begin{block}{Prompting intelligent}
+        \begin{itemize}\small
+          \item Intent \textbf{table\_reconstruction}
+                $\Rightarrow$ instruction LLM pour construire
+                un tableau Markdown
+          \item Adapte par type : BILAN (Actif/Passif),
+                CPC (Produits/Charges), Flux\ldots
+          \item Consigne : \textit{``Ne pas inventer de chiffres''}
+        \end{itemize}
+      \end{block}
+
+    \column{0.48\textwidth}
+      \begin{block}{Section hints dans le contexte}
+        \begin{itemize}\small
+          \item Chaque chunk embarque un \textbf{section\_hint}
+                (type de tableau detecte a l'ingestion)
+          \item Aide le LLM a distinguer Actif / Passif / CPC
+          \item Reduit les confusions entre tableaux similaires
+        \end{itemize}
+      \end{block}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{API et Deploiement}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{API REST et Interface (\texttt{api.py})}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+      \begin{block}{FastAPI Service}
+        \begin{itemize}\small
+          \item CORS active (frontend Vite/React)
+          \item \textbf{File d'attente asynchrone} pour l'extraction
+                (ThreadPoolExecutor)
+          \item Endpoints principaux :
+                \begin{itemize}\scriptsize
+                  \item \texttt{POST /ask} --- Q\&R semantique
+                  \item \texttt{POST /extract} --- Extraction tableau
+                  \item \texttt{GET /export\_xlsx} --- Export Excel
+                  \item \texttt{POST /ingest} --- Indexation PDF
+                \end{itemize}
+        \end{itemize}
+      \end{block}
+
+    \column{0.48\textwidth}
+      \begin{block}{Configuration multi-provider}
+        \begin{itemize}\small
+          \item \textbf{Groq} (Llama-4, Llama-3.3-70B) --- rapide
+          \item \textbf{Gemini 2.0 Flash} --- vision scans
+          \item \textbf{OpenAI GPT} --- Q\&R narrative
+          \item Selection automatique selon le tier actif
+        \end{itemize}
+      \end{block}
+
+      \begin{block}{Demarrage}
+        \begin{lstlisting}
+uvicorn api:app --reload --port 8000
+        \end{lstlisting}
+        \small Supporte : AGMA, Attijariwafa,\\Addoha, BMCI\ldots
+      \end{block}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Technologies et Resultats}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Stack Technologique}
+  \centering
+  \vspace{0.15cm}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    \textbf{Couche}      & \textbf{Technologie}                   & \textbf{Role} \\
+    \midrule
+    Extraction PDF       & pdfplumber, PyMuPDF, pymupdf4llm       & Texte + tableaux \\
+    Vision OCR           & Groq Llama-4, Gemini 2.0 Flash         & PDFs scannes \\
+    LLM Structure        & Groq llama-3.3-70B (JSON mode)         & Extraction fiable \\
+    Embeddings           & sentence-transformers/all-MiniLM-L6-v2 & Vecteurs semantiques \\
+    Base vectorielle     & FAISS (CPU)                            & Recherche rapide \\
+    Fallback classique   & Camelot, Tabula, pdfplumber            & Grilles detectees \\
+    API                  & FastAPI + uvicorn                      & Service REST \\
+    Export               & Pandas + xlsxwriter                    & Excel formate \\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{0.45cm}
+  \begin{columns}[T]
+    \column{0.3\textwidth}
+      \begin{tikzpicture}
+        \node[fill=primary!10, draw=primary, rounded corners=4pt,
+              text width=3.5cm, align=center, inner sep=7pt, font=\small]{
+          \textbf{Ingestion}\\[4pt]
+          Fast mode :\\1--2 sec/page\\
+          Full mode :\\5--10 sec/page
+        };
+      \end{tikzpicture}
+    \column{0.3\textwidth}
+      \begin{tikzpicture}
+        \node[fill=darkgreen!10, draw=darkgreen, rounded corners=4pt,
+              text width=3.5cm, align=center, inner sep=7pt, font=\small]{
+          \textbf{Extraction}\\[4pt]
+          Vision LLM :\\2--3 sec/page\\
+          Cascade auto\\si necessaire
+        };
+      \end{tikzpicture}
+    \column{0.3\textwidth}
+      \begin{tikzpicture}
+        \node[fill=accent!15, draw=accent, rounded corners=4pt,
+              text width=3.5cm, align=center, inner sep=7pt, font=\small]{
+          \textbf{Scalabilite}\\[4pt]
+          Workers paralleles\\multi-PDF\\Jobs asynchrones\\via API
+        };
+      \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Conclusion et Perspectives}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{frame}{Conclusion et Perspectives}
+  \begin{columns}[T]
+    \column{0.50\textwidth}
+      \begin{block}{Bilan du projet}
+        \begin{itemize}\small
+          \item Systeme \textbf{end-to-end} operationnel :\\
+                scraping $\to$ ingestion $\to$ retrieval
+                $\to$ extraction $\to$ export
+          \item Gestion des cas difficiles : scans,
+                multi-tableaux, normes CGNC/PCEC
+          \item \textbf{Cascade robuste} : 4 tiers d'extraction
+                avec validation automatique
+          \item Score de completude par tableau extrait
+        \end{itemize}
+      \end{block}
+
+    \column{0.46\textwidth}
+      \begin{alertblock}{Perspectives}
+        \begin{itemize}\small
+          \item Extension a d'autres emetteurs AMMC
+          \item Fine-tuning sur documents financiers marocains
+          \item Interface front-end React complete
+          \item Base de donnees pour historique multi-annees
+          \item Detection automatique d'anomalies comptables
+        \end{itemize}
+      \end{alertblock}
+  \end{columns}
+
+  \vspace{0.4cm}
+  \centering
+  \begin{tikzpicture}
+    \node[
+      fill=primary!10, draw=primary, rounded corners=5pt,
+      text width=11.5cm, align=center, inner sep=10pt
+    ]{
+      \textbf{Apport principal :} remplacer des heures d'extraction manuelle\\
+      par un pipeline automatise, fiable et extensible, combinant\\
+      \textbf{recherche semantique (RAG)} et \textbf{LLMs multimodaux}.
+    };
+  \end{tikzpicture}
+\end{frame}
+
+% ── Slide finale ──────────────────────────────────────────────────────────────
+\begin{frame}[plain]
+  \begin{tikzpicture}[overlay, remember picture]
+    \fill[primary] (current page.north west) rectangle (current page.south east);
+  \end{tikzpicture}
+  \centering
+  \vspace{2.5cm}
+  {\color{white}\Huge\bfseries Merci pour votre attention}\\[1.2cm]
+  {\color{whitesoft}\Large Questions ?}\\[1.5cm]
+  {\color{accent}\large votre.email@domaine.ma}
+\end{frame}
+
+\end{document}

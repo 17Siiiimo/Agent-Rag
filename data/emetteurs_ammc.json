@@ -1,0 +1,746 @@
+[
+  {
+    "code": "addoha",
+    "label": "ADDOHA"
+  },
+  {
+    "code": "adm",
+    "label": "ADM"
+  },
+  {
+    "code": "afma",
+    "label": "AFMA"
+  },
+  {
+    "code": "afric industries sa",
+    "label": "AFRIC INDUSTRIES SA"
+  },
+  {
+    "code": "afrilub",
+    "label": "AFRILUB"
+  },
+  {
+    "code": "afriquia gaz",
+    "label": "AFRIQUIA GAZ"
+  },
+  {
+    "code": "agence nationale des ports (anp)",
+    "label": "Agence Nationale des Ports (ANP)"
+  },
+  {
+    "code": "agma",
+    "label": "AGMA"
+  },
+  {
+    "code": "air liquide ( france)",
+    "label": "AIR LIQUIDE ( France)"
+  },
+  {
+    "code": "airbus se",
+    "label": "Airbus SE"
+  },
+  {
+    "code": "akdital",
+    "label": "AKDITAL"
+  },
+  {
+    "code": "al mada (ex sni)",
+    "label": "AL MADA (EX SNI)"
+  },
+  {
+    "code": "alliances darna",
+    "label": "Alliances Darna"
+  },
+  {
+    "code": "alliances développement immobilier (adi)",
+    "label": "Alliances Développement Immobilier (ADI)"
+  },
+  {
+    "code": "aluminium du maroc",
+    "label": "ALUMINIUM DU MAROC"
+  },
+  {
+    "code": "aradei capital",
+    "label": "ARADEI CAPITAL"
+  },
+  {
+    "code": "arcelormittal",
+    "label": "ARCELORMITTAL"
+  },
+  {
+    "code": "atlantasanad",
+    "label": "ATLANTASANAD"
+  },
+  {
+    "code": "atos",
+    "label": "ATOS"
+  },
+  {
+    "code": "attijariwafa bank",
+    "label": "ATTIJARIWAFA BANK"
+  },
+  {
+    "code": "auto hall",
+    "label": "AUTO HALL"
+  },
+  {
+    "code": "auto nejma",
+    "label": "AUTO NEJMA"
+  },
+  {
+    "code": "axa ( france)",
+    "label": "AXA ( France)"
+  },
+  {
+    "code": "axa credit (ex acred)",
+    "label": "AXA CREDIT (ex Acred)"
+  },
+  {
+    "code": "balima",
+    "label": "BALIMA"
+  },
+  {
+    "code": "bank of africa - groupe bmce (boa)",
+    "label": "Bank of Africa - Groupe BMCE (BOA)"
+  },
+  {
+    "code": "banque centrale populaire (bcp)",
+    "label": "Banque Centrale Populaire (BCP)"
+  },
+  {
+    "code": "bel (france)",
+    "label": "BEL (France)"
+  },
+  {
+    "code": "berliet",
+    "label": "BERLIET"
+  },
+  {
+    "code": "bmci",
+    "label": "BMCI"
+  },
+  {
+    "code": "bmci leasing",
+    "label": "BMCI LEASING"
+  },
+  {
+    "code": "bnde",
+    "label": "BNDE"
+  },
+  {
+    "code": "bnp paribas (france)",
+    "label": "BNP PARIBAS (France)"
+  },
+  {
+    "code": "branoma",
+    "label": "BRANOMA"
+  },
+  {
+    "code": "capep",
+    "label": "CAPEP"
+  },
+  {
+    "code": "capgemini",
+    "label": "CAPGEMINI"
+  },
+  {
+    "code": "carnaud maroc",
+    "label": "CARNAUD MAROC"
+  },
+  {
+    "code": "cartier saada",
+    "label": "CARTIER SAADA"
+  },
+  {
+    "code": "cash plus",
+    "label": "CASH PLUS"
+  },
+  {
+    "code": "cdg capital",
+    "label": "CDG capital"
+  },
+  {
+    "code": "cegelec",
+    "label": "CEGELEC"
+  },
+  {
+    "code": "centrale automobile cherifienne",
+    "label": "CENTRALE AUTOMOBILE CHERIFIENNE"
+  },
+  {
+    "code": "centrale danone",
+    "label": "CENTRALE DANONE"
+  },
+  {
+    "code": "cetelem",
+    "label": "CETELEM"
+  },
+  {
+    "code": "cfg bank",
+    "label": "CFG Bank"
+  },
+  {
+    "code": "cfi",
+    "label": "CFI"
+  },
+  {
+    "code": "cgi",
+    "label": "CGI"
+  },
+  {
+    "code": "charaf corporation",
+    "label": "CHARAF CORPORATION"
+  },
+  {
+    "code": "cih bank",
+    "label": "CIH Bank"
+  },
+  {
+    "code": "ciment de l'atlas",
+    "label": "Ciment de l'Atlas"
+  },
+  {
+    "code": "ciments du maroc",
+    "label": "CIMENTS DU MAROC"
+  },
+  {
+    "code": "cmg",
+    "label": "CMG"
+  },
+  {
+    "code": "cmgp group",
+    "label": "CMGP GROUP"
+  },
+  {
+    "code": "coface sa",
+    "label": "COFACE SA"
+  },
+  {
+    "code": "colorado sa",
+    "label": "COLORADO SA"
+  },
+  {
+    "code": "compagnie minière de touissit (cmt)",
+    "label": "Compagnie Minière de Touissit (CMT)"
+  },
+  {
+    "code": "copragri",
+    "label": "Copragri"
+  },
+  {
+    "code": "cosumar",
+    "label": "COSUMAR"
+  },
+  {
+    "code": "credit agricole ( france)",
+    "label": "CREDIT AGRICOLE ( France)"
+  },
+  {
+    "code": "credor",
+    "label": "Credor"
+  },
+  {
+    "code": "crédit agricole du maroc (cam)",
+    "label": "Crédit Agricole du Maroc (CAM)"
+  },
+  {
+    "code": "crédit du maroc (cdm)",
+    "label": "Crédit du Maroc (CDM)"
+  },
+  {
+    "code": "crédit lyonnais",
+    "label": "Crédit Lyonnais"
+  },
+  {
+    "code": "ctm",
+    "label": "CTM"
+  },
+  {
+    "code": "danone (france)",
+    "label": "Danone (France)"
+  },
+  {
+    "code": "dari couspate",
+    "label": "DARI COUSPATE"
+  },
+  {
+    "code": "decathlon sa (france) disp",
+    "label": "DECATHLON SA (France) DISP"
+  },
+  {
+    "code": "delta holding s.a",
+    "label": "DELTA HOLDING S.A"
+  },
+  {
+    "code": "diac equipement",
+    "label": "Diac Equipement"
+  },
+  {
+    "code": "diac salaf",
+    "label": "DIAC SALAF"
+  },
+  {
+    "code": "distrisoft",
+    "label": "DISTRISOFT"
+  },
+  {
+    "code": "disty technologies",
+    "label": "Disty Technologies"
+  },
+  {
+    "code": "disway",
+    "label": "DISWAY"
+  },
+  {
+    "code": "dlm (delattre levivier maroc)",
+    "label": "DLM (Delattre Levivier Maroc)"
+  },
+  {
+    "code": "dyar al mansour",
+    "label": "DYAR AL MANSOUR"
+  },
+  {
+    "code": "ennakl automobiles",
+    "label": "ENNAKL AUTOMOBILES"
+  },
+  {
+    "code": "eqdom",
+    "label": "EQDOM"
+  },
+  {
+    "code": "essilorluxottica",
+    "label": "EssilorLuxottica"
+  },
+  {
+    "code": "faurecia",
+    "label": "Faurecia"
+  },
+  {
+    "code": "fec",
+    "label": "FEC"
+  },
+  {
+    "code": "fenie brossette",
+    "label": "FENIE BROSSETTE"
+  },
+  {
+    "code": "fertima",
+    "label": "FERTIMA"
+  },
+  {
+    "code": "general tire",
+    "label": "GENERAL TIRE"
+  },
+  {
+    "code": "holcim maroc",
+    "label": "HOLCIM MAROC"
+  },
+  {
+    "code": "holding al omrane",
+    "label": "Holding AL Omrane"
+  },
+  {
+    "code": "hps sa",
+    "label": "HPS SA"
+  },
+  {
+    "code": "ib maroc.com",
+    "label": "IB MAROC.COM"
+  },
+  {
+    "code": "immolog",
+    "label": "IMMOLOG"
+  },
+  {
+    "code": "immorente invest",
+    "label": "IMMORENTE INVEST"
+  },
+  {
+    "code": "involys",
+    "label": "INVOLYS"
+  },
+  {
+    "code": "jaida",
+    "label": "JAIDA"
+  },
+  {
+    "code": "jet contractors",
+    "label": "JET CONTRACTORS"
+  },
+  {
+    "code": "l'oréal",
+    "label": "L'Oréal"
+  },
+  {
+    "code": "la marocaine-vie",
+    "label": "La MAROCAINE-VIE"
+  },
+  {
+    "code": "label vie s.a.",
+    "label": "LABEL VIE S.A."
+  },
+  {
+    "code": "lafarge france",
+    "label": "LAFARGE France"
+  },
+  {
+    "code": "lafargeholcim maroc",
+    "label": "LAFARGEHOLCIM MAROC"
+  },
+  {
+    "code": "le carton",
+    "label": "LE CARTON"
+  },
+  {
+    "code": "lesieur cristal",
+    "label": "LESIEUR CRISTAL"
+  },
+  {
+    "code": "lgmc",
+    "label": "LGMC"
+  },
+  {
+    "code": "locasom sa",
+    "label": "LOCASOM SA"
+  },
+  {
+    "code": "longometal",
+    "label": "LONGOMETAL"
+  },
+  {
+    "code": "lydec",
+    "label": "LYDEC"
+  },
+  {
+    "code": "m2m group",
+    "label": "M2M Group"
+  },
+  {
+    "code": "maghreb oxygene",
+    "label": "MAGHREB OXYGENE"
+  },
+  {
+    "code": "maghreb steel",
+    "label": "MAGHREB STEEL"
+  },
+  {
+    "code": "maghrebail",
+    "label": "MAGHREBAIL"
+  },
+  {
+    "code": "managem",
+    "label": "MANAGEM"
+  },
+  {
+    "code": "maroc leasing sa",
+    "label": "MAROC LEASING SA"
+  },
+  {
+    "code": "maroc telecom",
+    "label": "MAROC TELECOM"
+  },
+  {
+    "code": "marsa maroc",
+    "label": "MARSA MAROC"
+  },
+  {
+    "code": "matel pc market",
+    "label": "Matel PC MARKET"
+  },
+  {
+    "code": "med paper (ex papelera de tetuan)",
+    "label": "MED PAPER (ex Papelera de Tetuan)"
+  },
+  {
+    "code": "medi telecom sa",
+    "label": "MEDI TELECOM SA"
+  },
+  {
+    "code": "mediaco maroc",
+    "label": "MEDIACO MAROC"
+  },
+  {
+    "code": "microdata",
+    "label": "MICRODATA"
+  },
+  {
+    "code": "mutandis sca",
+    "label": "MUTANDIS SCA"
+  },
+  {
+    "code": "nexans maroc",
+    "label": "NEXANS MAROC"
+  },
+  {
+    "code": "nexans(france)",
+    "label": "NEXANS(France)"
+  },
+  {
+    "code": "nge",
+    "label": "NGE"
+  },
+  {
+    "code": "ocp",
+    "label": "OCP"
+  },
+  {
+    "code": "odep",
+    "label": "ODEP"
+  },
+  {
+    "code": "ona",
+    "label": "ONA"
+  },
+  {
+    "code": "oncf",
+    "label": "ONCF"
+  },
+  {
+    "code": "onda",
+    "label": "ONDA"
+  },
+  {
+    "code": "one",
+    "label": "ONE"
+  },
+  {
+    "code": "orange france",
+    "label": "ORANGE France"
+  },
+  {
+    "code": "oulmes",
+    "label": "OULMES"
+  },
+  {
+    "code": "promopharm",
+    "label": "PROMOPHARM"
+  },
+  {
+    "code": "rci finance maroc",
+    "label": "RCI FINANCE MAROC"
+  },
+  {
+    "code": "rebab company",
+    "label": "REBAB COMPANY"
+  },
+  {
+    "code": "renault",
+    "label": "Renault"
+  },
+  {
+    "code": "risma",
+    "label": "RISMA"
+  },
+  {
+    "code": "résidences dar saada (rds)",
+    "label": "Résidences Dar Saada (RDS)"
+  },
+  {
+    "code": "s2m",
+    "label": "S2M"
+  },
+  {
+    "code": "safran",
+    "label": "SAFRAN"
+  },
+  {
+    "code": "saham bank",
+    "label": "Saham Bank"
+  },
+  {
+    "code": "saham leasing",
+    "label": "Saham Leasing"
+  },
+  {
+    "code": "salafin",
+    "label": "SALAFIN"
+  },
+  {
+    "code": "samir",
+    "label": "SAMIR"
+  },
+  {
+    "code": "sanlam maroc (ex saham assurance)",
+    "label": "Sanlam Maroc (ex Saham Assurance)"
+  },
+  {
+    "code": "sanofi",
+    "label": "SANOFI"
+  },
+  {
+    "code": "sce",
+    "label": "SCE"
+  },
+  {
+    "code": "settavex",
+    "label": "SETTAVEX"
+  },
+  {
+    "code": "sfi",
+    "label": "SFI"
+  },
+  {
+    "code": "sgtm",
+    "label": "SGTM"
+  },
+  {
+    "code": "smi",
+    "label": "SMI"
+  },
+  {
+    "code": "snep",
+    "label": "SNEP"
+  },
+  {
+    "code": "societe des boissons du maroc (sbm)",
+    "label": "SOCIETE DES BOISSONS DU MAROC (SBM)"
+  },
+  {
+    "code": "societe generale (france)",
+    "label": "SOCIETE GENERALE (France)"
+  },
+  {
+    "code": "sofac",
+    "label": "SOFAC"
+  },
+  {
+    "code": "somacovam",
+    "label": "SOMACOVAM"
+  },
+  {
+    "code": "somafic",
+    "label": "SOMAFIC"
+  },
+  {
+    "code": "somepi",
+    "label": "SOMEPI"
+  },
+  {
+    "code": "sonasid",
+    "label": "SONASID"
+  },
+  {
+    "code": "sopra steria",
+    "label": "SOPRA STERIA"
+  },
+  {
+    "code": "sorec credit",
+    "label": "SOREC CREDIT"
+  },
+  {
+    "code": "sothema",
+    "label": "SOTHEMA"
+  },
+  {
+    "code": "spie sa",
+    "label": "SPIE SA"
+  },
+  {
+    "code": "srm sa",
+    "label": "SRM SA"
+  },
+  {
+    "code": "stellantis",
+    "label": "Stellantis"
+  },
+  {
+    "code": "stokvis nord afrique",
+    "label": "STOKVIS NORD AFRIQUE"
+  },
+  {
+    "code": "stroc",
+    "label": "STROC"
+  },
+  {
+    "code": "suez environnement company",
+    "label": "Suez Environnement Company"
+  },
+  {
+    "code": "tanger med 2",
+    "label": "Tanger Med 2"
+  },
+  {
+    "code": "tanger med port authority",
+    "label": "Tanger Med Port Authority"
+  },
+  {
+    "code": "taqa morocco (ex jlec)",
+    "label": "Taqa Morocco (ex JLEC)"
+  },
+  {
+    "code": "taslif",
+    "label": "TASLIF"
+  },
+  {
+    "code": "tgcc sa",
+    "label": "TGCC SA"
+  },
+  {
+    "code": "timar",
+    "label": "TIMAR"
+  },
+  {
+    "code": "total (france)",
+    "label": "TOTAL (France)"
+  },
+  {
+    "code": "totalenergies marketing maroc",
+    "label": "TotalEnergies Marketing Maroc"
+  },
+  {
+    "code": "trarem afrique",
+    "label": "TRAREM AFRIQUE"
+  },
+  {
+    "code": "tui",
+    "label": "TUI"
+  },
+  {
+    "code": "unimer",
+    "label": "UNIMER"
+  },
+  {
+    "code": "valyans consulting",
+    "label": "Valyans Consulting"
+  },
+  {
+    "code": "veolia environnement",
+    "label": "Veolia environnement"
+  },
+  {
+    "code": "vicenne",
+    "label": "Vicenne"
+  },
+  {
+    "code": "vinci (france)",
+    "label": "VINCI (France)"
+  },
+  {
+    "code": "vivendi",
+    "label": "VIVENDI"
+  },
+  {
+    "code": "wafa assurance",
+    "label": "Wafa Assurance"
+  },
+  {
+    "code": "wafabail",
+    "label": "Wafabail"
+  },
+  {
+    "code": "wafabank",
+    "label": "WAFABANK"
+  },
+  {
+    "code": "wafasalaf",
+    "label": "WAFASALAF"
+  },
+  {
+    "code": "zalar holding",
+    "label": "Zalar Holding"
+  },
+  {
+    "code": "zellidja",
+    "label": "ZELLIDJA"
+  }
+]
