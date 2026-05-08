@@ -29,6 +29,9 @@ _NEGATIVE_BOUNDARY_MARKERS = [
     "flux de tresorerie",
     "tableau des flux de tresorerie",
     "resultat net et gains et pertes comptabilises directement en capitaux propres",
+    "resultat net et gains",
+    "gains et pertes comptabilises directement",
+    "total des gains et pertes comptabilises",
 ]
 
 _TARGET_END_ANCHORS = {
@@ -274,7 +277,8 @@ def _candidate_from_line_header(
     if retrieved.scope_score <= 0:
         confidence = min(confidence, 0.45)
 
-    bbox = clamp_bbox([x_start - 8, max(0.0, y_start - 10), x_end + 8, min(height, next_y)], width, height)
+    right_padding = 2.0 if column_bounds is not None else 8.0
+    bbox = clamp_bbox([x_start - 8, max(0.0, y_start - 10), x_end + right_padding, min(height, next_y)], width, height)
     confidence = _adjust_balance_candidate_confidence(
         confidence=confidence,
         evidence=evidence,
@@ -666,9 +670,9 @@ def _first_boundary_y(
         center_x = (x0 + x1) / 2
         if x_bounds is not None and not x_bounds[0] - 5 <= center_x <= x_bounds[1] + 5:
             continue
-        if target_table == "CPC" and cpc_side == "left" and x0 > width * 0.45:
+        if target_table == "CPC" and cpc_side == "left" and center_x > width * 0.45:
             continue
-        if target_table == "CPC" and cpc_side == "right" and x0 < width * 0.45:
+        if target_table == "CPC" and cpc_side == "right" and center_x < width * 0.45:
             continue
         if _is_boundary_line(norm, markers, target_table):
             return y0
@@ -850,33 +854,27 @@ def _single_column_bounds_from_header(
     y_start = float(header[1])
     header_center = (float(header[0]) + float(header[2])) / 2
     split_x = width / 2
-    right_has_other_statement = any(
-        y0 >= y_start - 50
-        and x0 > split_x - 5
-        and (
-            _is_layout_split_title(norm)
-            or norm.startswith("etat des soldes")
-            or norm.startswith("capacite d'autofinancement")
-            or norm.startswith("capacite d autofinancement")
-        )
-        for x0, y0, _x1, _y1, _text, norm in lines
-    )
-    left_has_other_statement = any(
-        y0 >= y_start - 50
-        and x0 < split_x + 5
-        and (
-            _is_layout_split_title(norm)
-            or norm.startswith("etat des soldes")
-            or norm.startswith("capacite d'autofinancement")
-            or norm.startswith("capacite d autofinancement")
-        )
-        for x0, y0, _x1, _y1, _text, norm in lines
-    )
+    right_neighbor_xs = [
+        x0
+        for x0, y0, x1, _y1, _text, norm in lines
+        if y0 >= y_start - 50
+        and ((x0 + x1) / 2) > split_x - 5
+        and _is_neighbor_statement_title(norm)
+    ]
+    left_neighbor_xs = [
+        x1
+        for x0, y0, x1, _y1, _text, norm in lines
+        if y0 >= y_start - 50
+        and ((x0 + x1) / 2) < split_x + 5
+        and _is_neighbor_statement_title(norm)
+    ]
+    right_has_other_statement = bool(right_neighbor_xs)
+    left_has_other_statement = bool(left_neighbor_xs)
 
     if header_center < split_x - 20 and right_has_other_statement:
-        return (0.0, split_x)
+        return (0.0, max(width * 0.35, min(right_neighbor_xs) - 8.0))
     if header_center > split_x + 20 and left_has_other_statement:
-        return (split_x, width)
+        return (min(width * 0.65, max(left_neighbor_xs) + 8.0), width)
     return None
 
 
@@ -891,7 +889,26 @@ def _is_layout_split_title(norm_line: str) -> bool:
         or norm_line.startswith("compte de resultat")
         or norm_line.startswith("etat du resultat")
         or norm_line.startswith("etat des soldes")
+        or norm_line.startswith("tableau des flux")
+        or norm_line.startswith("flux de tresorerie")
+        or norm_line.startswith("etat du resultat net")
+        or norm_line.startswith("etat de resultat net")
+        or norm_line.startswith("resultat net et gains")
         or norm_line.startswith("cpc")
+    )
+
+
+def _is_neighbor_statement_title(norm_line: str) -> bool:
+    return (
+        _is_layout_split_title(norm_line)
+        or norm_line.startswith("tableau des flux")
+        or norm_line.startswith("flux de tresorerie")
+        or norm_line.startswith("etat du resultat net")
+        or norm_line.startswith("etat de resultat net")
+        or norm_line.startswith("resultat net et gains")
+        or norm_line.startswith("etat des soldes")
+        or norm_line.startswith("capacite d'autofinancement")
+        or norm_line.startswith("capacite d autofinancement")
     )
 
 
@@ -1001,7 +1018,10 @@ def _cpc_horizontal_bounds(
         and (
             norm.startswith("compte de produits et charges")
             or norm.startswith("compte de resultat")
+            or norm.startswith("etat du resultat")
+            or norm.startswith("etat de resultat")
             or "compte de produits et charges consolide" in norm[:90]
+            or "etat du resultat global" in norm[:90]
         )
     ]
     if title_lines:
@@ -1011,11 +1031,14 @@ def _cpc_horizontal_bounds(
         if x0 < width * 0.25:
             right_side_boundaries = [
                 bx0 for bx0, by0, _bx1, _by1, _text, norm in lines
-                if y_start + 10 < by0 < y_end
-                and bx0 > width * 0.45
+                if y_start - 12 < by0 < y_end
+                and ((bx0 + _bx1) / 2) > width * 0.45
                 and any(marker in norm for marker in [
                     "flux de tresorerie",
                     "tableau des flux de tresorerie",
+                    "variation des capitaux propres",
+                    "etat du resultat net",
+                    "resultat net et gains",
                     "perimetre de consolidation",
                     "tableau de financement",
                     "attestation",
@@ -1027,10 +1050,13 @@ def _cpc_horizontal_bounds(
     right_boundaries = [
         x0 for x0, y0, _x1, _y1, _text, norm in lines
         if y_start + 10 < y0 < y_end
-        and x0 > width * 0.45
+        and ((x0 + _x1) / 2) > width * 0.45
         and any(marker in norm for marker in [
             "flux de tresorerie",
             "tableau des flux de tresorerie",
+            "variation des capitaux propres",
+            "etat du resultat net",
+            "resultat net et gains",
             "perimetre de consolidation",
             "tableau de financement",
             "attestation",
@@ -1052,7 +1078,10 @@ def _cpc_title_side(
         and (
             norm.startswith("compte de produits et charges")
             or norm.startswith("compte de resultat")
+            or norm.startswith("etat du resultat")
+            or norm.startswith("etat de resultat")
             or "compte de produits et charges consolide" in norm[:90]
+            or "etat du resultat global" in norm[:90]
         )
     ]
     if not title_lines:

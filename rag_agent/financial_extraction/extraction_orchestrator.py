@@ -243,6 +243,13 @@ def extract_financial_tables(
     if pages is not None:
         image_paths = {page.page_number: page.image_path for page in pages if page.image_path}
         rendered_pages_skipped = bool(image_paths) and all(Path(path).is_file() for path in image_paths.values())
+        if not rendered_pages_skipped:
+            rendered_dir = ensure_dir(rendered_dir)
+            image_paths = render_pdf_pages(pdf.pdf_path, rendered_dir, dpi=cfg.dpi)
+            for page in pages:
+                if page.page_number in image_paths:
+                    page.image_path = image_paths[page.page_number]
+            write_json(page_chunks_path, [p.to_dict() for p in pages])
     else:
         image_paths = {}
     if pages is None:

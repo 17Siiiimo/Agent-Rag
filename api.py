@@ -12,6 +12,7 @@ import json
 import os
 import unicodedata
 import uuid
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+import requests
 
 from rag_agent.pipeline_phase1 import Phase1Pipeline
 from rag_agent.scraper import DEFAULT_PDF_DIR as PDF_DIR, normalize_user_emetteur
@@ -47,6 +49,34 @@ app.add_middleware(
 _API_ROOT = Path(__file__).resolve().parent
 # PDF_DIR : même dossier que le scraper (dossier « Émetteur » si détecté)
 XLSX_DIR = _API_ROOT / "outputs" / "xlsx"
+
+APPROACH_A = "A"
+APPROACH_B = "B"
+APPROACH_C = "C"
+APPROACHES: dict[str, dict[str, str | None]] = {
+    APPROACH_A: {
+        "id": APPROACH_A,
+        "label": os.getenv("APPROACH_A_LABEL", "A"),
+        "mode": "local",
+        "path": str(_API_ROOT),
+        "base_url": None,
+    },
+    APPROACH_B: {
+        "id": APPROACH_B,
+        "label": os.getenv("APPROACH_B_LABEL", "B"),
+        "mode": "external",
+        "path": os.getenv("APPROACH_B_PATH", r"C:\Users\Pks\Downloads\original(khdam baqi a LLM d 2 table)"),
+        "base_url": os.getenv("APPROACH_B_URL", "http://127.0.0.1:8001"),
+    },
+    APPROACH_C: {
+        "id": APPROACH_C,
+        "label": os.getenv("APPROACH_C_LABEL", "C"),
+        "mode": "external",
+        "path": os.getenv("APPROACH_C_PATH", r"C:\Users\Pks\Downloads\RAG - Copie"),
+        "base_url": os.getenv("APPROACH_C_URL", "http://127.0.0.1:8002"),
+    },
+}
+TERMINAL_JOB_STATUSES = {"success", "error", "partial"}
 
 KNOWN_EMETTEURS = [
     {"id": "agma", "name": "AGMA"},
@@ -289,6 +319,11 @@ class ExtraireBody(BaseModel):
         description="Fournisseur LLM: groq, gemini, gpt-5.4",
         validation_alias=AliasChoices("api_provider", "apiProvider", "provider", "llm_provider"),
     )
+    approach: str = Field(
+        APPROACH_A,
+        description="Approche d'extraction: A (locale), B ou C (services externes)",
+        validation_alias=AliasChoices("approach", "approche", "extraction_approach", "extractionApproach"),
+    )
     force_vision: bool = Field(
         False,
         description="Force une nouvelle extraction Vision meme si un resultat LLM valide existe deja",
@@ -307,6 +342,11 @@ class ExtraireBody(BaseModel):
             return ""
         return normalize_user_emetteur(str(v))
 
+    @field_validator("approach", mode="before")
+    @classmethod
+    def _normalize_approach_field(cls, v: Any) -> str:
+        return _normalize_approach(v)
+
 
 # ─── Routes ─────────────────────────────────────────────────────────────────
 
@@ -314,6 +354,49 @@ class ExtraireBody(BaseModel):
 @app.get("/")
 def root():
     return {"message": "RAG Phase 1 API", "docs": "/docs", "api": "/api/emetteurs"}
+
+
+def _normalize_approach(value: Any) -> str:
+    text = str(value or APPROACH_A).strip().upper()
+    aliases = {
+        "1": APPROACH_A,
+        "LOCAL": APPROACH_A,
+        "MAIN": APPROACH_A,
+        "DEFAULT": APPROACH_A,
+        "RAG_AVANT_OCR": APPROACH_A,
+        "2": APPROACH_B,
+        "ORIGINAL": APPROACH_B,
+        "EXTERNAL": APPROACH_B,
+        "3": APPROACH_C,
+        "RAG_COPIE": APPROACH_C,
+        "COPY": APPROACH_C,
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in APPROACHES:
+        raise ValueError(f"Approche inconnue: {value}. Valeurs acceptees: A, B, C")
+    return normalized
+
+
+def _public_approaches() -> list[dict[str, str | None]]:
+    return [
+        {
+            "id": approach["id"],
+            "label": approach["label"],
+            "mode": approach["mode"],
+            "path": approach["path"],
+            "base_url": approach["base_url"],
+        }
+        for approach in APPROACHES.values()
+    ]
+
+
+@app.get("/api/approaches", response_class=JSONResponse)
+def api_approaches():
+    """Liste des approches disponibles pour le bouton Choix de L'approche."""
+    return JSONResponse(
+        content={"default": APPROACH_A, "approaches": _public_approaches()},
+        media_type="application/json; charset=utf-8",
+    )
 
 
 def _load_emetteurs_from_file() -> list[dict]:
@@ -577,7 +660,13 @@ def _run_financial_vision_job(
         force_page,
     )
     try:
-        _jobs[job_id] = {"status": "pending", "step": "ensure_pdf", "progress": 5}
+        _jobs[job_id] = {
+            "status": "pending",
+            "step": "ensure_pdf",
+            "progress": 5,
+            "approach": APPROACH_A,
+            "approach_label": APPROACHES[APPROACH_A]["label"],
+        }
         ensured = _ensure_pdf(normalized_emetteur, year, tc, tr, sm)
         if not ensured.get("success"):
             raise RuntimeError(ensured.get("message") or "PDF introuvable")
@@ -585,7 +674,13 @@ def _run_financial_vision_job(
         if not pdf_path.is_file():
             raise RuntimeError(f"PDF introuvable: {pdf_path}")
 
-        _jobs[job_id] = {"status": "pending", "step": "crop_and_vision", "progress": 30}
+        _jobs[job_id] = {
+            "status": "pending",
+            "step": "crop_and_vision",
+            "progress": 30,
+            "approach": APPROACH_A,
+            "approach_label": APPROACHES[APPROACH_A]["label"],
+        }
         output_dir = (
             _API_ROOT
             / "output"
@@ -631,6 +726,8 @@ def _run_financial_vision_job(
             "missing_anchors": [],
             "type_rapport_used": tr,
             "api_provider": provider,
+            "approach": APPROACH_A,
+            "approach_label": APPROACHES[APPROACH_A]["label"],
             "crop_path": result.get("crop_path", ""),
             "vision_output_dir": (result.get("debug") or {}).get("dir", str(output_dir)),
             "validation": validation,
@@ -640,7 +737,12 @@ def _run_financial_vision_job(
             "target_table": target_table,
             "force_vision": force_vision,
             "force_page": force_page,
-            "error": _friendly_extraction_error(result_error),
+            "error": _friendly_extraction_error(
+                result_error,
+                target_table=target_table,
+                selected_page=result.get("selected_page"),
+                crop_path=result.get("crop_path", ""),
+            ),
         }
     except Exception as e:
         logger.exception("_run_financial_vision_job exception: %s", e)
@@ -649,6 +751,8 @@ def _run_financial_vision_job(
             "error": str(e),
             "type_rapport_used": tr,
             "api_provider": provider,
+            "approach": APPROACH_A,
+            "approach_label": APPROACHES[APPROACH_A]["label"],
             "force_vision": force_vision,
             "force_page": force_page,
         }
@@ -745,22 +849,139 @@ def _financial_result_to_table(result: dict[str, Any]) -> tuple[list[str], list[
     return headers, rows
 
 
-def _friendly_extraction_error(error: str) -> str:
+def _friendly_extraction_error(
+    error: str,
+    *,
+    target_table: str | None = None,
+    selected_page: int | None = None,
+    crop_path: str | None = None,
+) -> str:
     text = str(error or "")
     lowered = text.lower()
+    target_label = _target_table_label(target_table)
     if "insufficient_quota" in lowered or "exceeded your current quota" in lowered:
         return (
-            "Quota du fournisseur LLM atteinte. Le PDF et le crop ont ete generes, "
+            f"{target_label}: quota du fournisseur LLM atteinte. Le PDF et le crop ont ete generes, "
             "mais l'extraction Vision n'a pas pu etre lancee. Choisissez Groq/Gemini "
             "ou verifiez le quota OpenAI."
         )
     if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
         return (
-            "Limite du fournisseur LLM atteinte. Le PDF et le crop ont ete generes. "
+            f"{target_label}: limite du fournisseur LLM atteinte. Le PDF et le crop ont ete generes. "
             "Attendez 1-2 minutes puis relancez, envoyez moins de tables en meme temps, "
             "ou choisissez un autre fournisseur Vision."
         )
+    if "target_found_false" in lowered or "target_not_found" in lowered:
+        details = []
+        if selected_page:
+            details.append(f"page selectionnee: {selected_page}")
+        if crop_path:
+            details.append("crop disponible pour verification")
+        suffix = f" ({'; '.join(details)})" if details else ""
+        return (
+            f"{target_label}: table cible non detectee par le LLM dans le crop{suffix}. "
+            "Le probleme concerne cette table seulement; vous pouvez relancer avec "
+            "'Reextraire the New Page' ou deselectionner cette table et garder les autres."
+        )
+    if text:
+        return f"{target_label}: {text}" if target_table else text
     return text
+
+
+def _target_table_label(target_table: str | None) -> str:
+    labels = {
+        "BILAN_ACTIF": "BILAN ACTIF",
+        "BILAN_PASSIF": "BILAN PASSIF",
+        "CPC": "CPC",
+    }
+    return labels.get(str(target_table or "").upper(), str(target_table or "Table").replace("_", " "))
+
+
+def _external_url(approach: str, endpoint: str) -> str:
+    cfg = APPROACHES[approach]
+    base_url = str(cfg.get("base_url") or "").rstrip("/")
+    if not base_url:
+        raise RuntimeError(f"Approche {approach} n'a pas de base_url configuree")
+    return f"{base_url}{endpoint}"
+
+
+def _run_external_approach_job(
+    job_id: str,
+    approach: str,
+    payload: dict[str, Any],
+) -> None:
+    """Forward a local job to an external approach API and mirror its final status."""
+    cfg = APPROACHES[approach]
+    base_url = str(cfg.get("base_url") or "").rstrip("/")
+    label = str(cfg.get("label") or approach)
+    try:
+        _jobs[job_id] = {
+            "status": "pending",
+            "step": "external_submit",
+            "progress": 5,
+            "approach": approach,
+            "approach_label": label,
+            "external_base_url": base_url,
+        }
+        response = requests.post(
+            _external_url(approach, "/api/extraire"),
+            json={k: v for k, v in payload.items() if k != "approach"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        submitted = response.json()
+        external_job_id = submitted.get("job_id")
+        if not external_job_id:
+            raise RuntimeError(f"Approche {approach} n'a pas retourne job_id: {submitted}")
+
+        _jobs[job_id].update(
+            {
+                "step": "external_running",
+                "progress": 10,
+                "external_job_id": external_job_id,
+            }
+        )
+        deadline = time.time() + int(os.getenv("APPROACH_EXTERNAL_TIMEOUT_SECONDS", "3600"))
+        while time.time() < deadline:
+            status_response = requests.get(
+                _external_url(approach, f"/api/status/{external_job_id}"),
+                timeout=30,
+            )
+            status_response.raise_for_status()
+            external_status = status_response.json()
+            mirrored = dict(external_status)
+            mirrored.update(
+                {
+                    "approach": approach,
+                    "approach_label": label,
+                    "external_base_url": base_url,
+                    "external_job_id": external_job_id,
+                    "external_path": cfg.get("path"),
+                }
+            )
+            status = str(external_status.get("status") or "pending").lower()
+            if status in TERMINAL_JOB_STATUSES:
+                _jobs[job_id] = mirrored
+                return
+            mirrored.setdefault("status", "pending")
+            mirrored.setdefault("step", "external_running")
+            mirrored.setdefault("progress", 50)
+            _jobs[job_id] = mirrored
+            time.sleep(float(os.getenv("APPROACH_EXTERNAL_POLL_SECONDS", "2")))
+        raise TimeoutError(f"Approche {approach} timeout en attendant le job externe {external_job_id}")
+    except Exception as exc:
+        logger.exception("_run_external_approach_job exception approach=%s: %s", approach, exc)
+        _jobs[job_id] = {
+            "status": "error",
+            "error": (
+                f"Approche {approach} indisponible. Lancez son backend sur {base_url} "
+                f"puis relancez l'extraction. Detail: {exc}"
+            ),
+            "approach": approach,
+            "approach_label": label,
+            "external_base_url": base_url,
+            "external_path": cfg.get("path"),
+        }
 
 
 def _write_financial_excel(job_id: str, headers: list[str], rows: list[list[str]], company: str, year: int, target_table: str) -> str | None:
@@ -837,7 +1058,14 @@ async def api_extraire(request: Request):
     )
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "step": "scraping", "steps_done": [], "progress": 0}
+    _jobs[job_id] = {
+        "status": "pending",
+        "step": "scraping",
+        "steps_done": [],
+        "progress": 0,
+        "approach": APPROACH_A,
+        "approach_label": APPROACHES[APPROACH_A]["label"],
+    }
     type_map = {
         "COMPTES SOCIAUX": "sociaux",
         "COMPTES CONSOLIDES": "consolides",
@@ -853,23 +1081,29 @@ async def api_extraire(request: Request):
     api_provider = _normalize_api_provider(body.api_provider or "groq")
     force_vision = bool(body.force_vision)
     force_page = bool(body.force_page)
-    _executor.submit(
-        _run_financial_vision_job,
-        job_id,
-        body.emetteur,
-        body.annee,
-        body.tableau,
-        type_comptes,
-        type_rapport,
-        search_mode,
-        api_provider,
-        force_vision,
-        force_page,
-    )
+    approach = _normalize_approach(body.approach)
+    if approach == APPROACH_A:
+        _executor.submit(
+            _run_financial_vision_job,
+            job_id,
+            body.emetteur,
+            body.annee,
+            body.tableau,
+            type_comptes,
+            type_rapport,
+            search_mode,
+            api_provider,
+            force_vision,
+            force_page,
+        )
+    else:
+        _executor.submit(_run_external_approach_job, job_id, approach, raw)
     return {
         "job_id": job_id,
         "type_rapport_used": type_rapport,
         "api_provider": api_provider,
+        "approach": approach,
+        "approach_label": APPROACHES[approach]["label"],
         "force_vision": force_vision,
         "force_page": force_page,
     }
@@ -911,6 +1145,33 @@ def api_download(job_id: str):
     job = _jobs[job_id]
     if job.get("status") != "success":
         raise HTTPException(status_code=400, detail="Extraction non terminée ou en erreur")
+    external_job_id = job.get("external_job_id")
+    approach = str(job.get("approach") or "")
+    if external_job_id and approach in APPROACHES and approach != APPROACH_A:
+        try:
+            response = requests.get(
+                _external_url(approach, f"/api/download/{external_job_id}"),
+                timeout=120,
+            )
+            response.raise_for_status()
+            content_type = response.headers.get(
+                "content-type",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            filename = f"{job_id}_{approach}.xlsx"
+            disposition = response.headers.get("content-disposition", "")
+            if "filename=" in disposition:
+                filename = disposition.split("filename=", 1)[1].strip().strip('"')
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Telechargement externe impossible pour approche {approach}: {exc}",
+            )
     excel_path = job.get("excel_path")
     if not excel_path or not os.path.isfile(excel_path):
         raise HTTPException(status_code=404, detail="Fichier Excel introuvable")
