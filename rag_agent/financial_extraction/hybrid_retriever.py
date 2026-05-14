@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from typing import AbstractSet
 
 import numpy as np
 
@@ -12,12 +13,18 @@ from .keyword_dictionary import (
     SCOPE_KEYWORDS,
     TABLE_TITLES,
     keyword_hits,
+    looks_like_balance_currency_ventilation_page,
     scoped_table_signature,
     target_query,
 )
+from .embedding_model import get_sentence_transformer
 from .models import PipelineConfig, RetrievedPage
 from .page_indexer import PageAwareIndex
 from .utils import normalize_text
+
+# When top-2 pages are nearly tied on the blended score, prefer dense row-label match (scope signature).
+_RETRIEVAL_TIE_MARGIN = 0.045
+_TIEBREAK_HEAD = 6
 
 
 def retrieve_candidate_pages(
@@ -26,15 +33,23 @@ def retrieve_candidate_pages(
     scope: str,
     sector: str,
     cfg: PipelineConfig,
+    exclude_page_numbers: AbstractSet[int] | None = None,
 ) -> list[RetrievedPage]:
     query = target_query(target_table, scope, sector)
     bm25_scores = _bm25_scores([p.embedding_text() for p in index.pages], query)
     vector_scores = _vector_scores(index, query, cfg.embedding_model)
+    excluded_pages = exclude_page_numbers or set()
 
     results: list[RetrievedPage] = []
     for i, page in enumerate(index.pages):
         target_anchor_score, matched_anchors = _target_anchor_score(page.page_text, target_table, sector)
-        scope_signature_score, scope_signature_hits, opposite_signature_score = _scope_signature_score(
+        (
+            scope_signature_score,
+            scope_signature_hits,
+            opposite_signature_score,
+            scope_signature_coverage,
+            opposite_signature_coverage,
+        ) = _scope_signature_score(
             page.page_text,
             target_table,
             sector,
@@ -75,6 +90,8 @@ def retrieve_candidate_pages(
         main_balance_statement = False
         balance_layout_score = 0.0
         if target_table in {"BILAN_ACTIF", "BILAN_PASSIF"}:
+            if looks_like_balance_currency_ventilation_page(norm_page_text):
+                score *= 0.07
             main_balance_statement = _looks_like_main_balance_statement(norm_page_text, target_table)
             balance_layout_score = _balance_layout_score(index.pages, i, norm_page_text, target_table)
             if main_balance_statement:
@@ -108,6 +125,7 @@ def retrieve_candidate_pages(
             scope_signature_score=scope_signature_score,
             opposite_signature_score=opposite_signature_score,
             scope_signature_hits=scope_signature_hits,
+            scope_signature_coverage=scope_signature_coverage,
             target_table=target_table,
             title_score=title_score,
             scope_score=scope_score,
@@ -123,16 +141,29 @@ def retrieve_candidate_pages(
                 score *= 0.28
             elif balance_layout_score <= 0.0 and scope_signature_score < 0.70:
                 score *= 0.55
-        wrong_table_penalty, wrong_table_evidence = _wrong_table_penalty(norm_page_text, target_table)
+        wrong_table_penalty, wrong_table_evidence = _wrong_table_penalty(
+            norm_page_text,
+            target_table,
+            scope_signature_coverage=scope_signature_coverage,
+            scope_signature_score=scope_signature_score,
+            balance_layout_score=balance_layout_score,
+        )
         if wrong_table_penalty < 1.0:
             score *= wrong_table_penalty
-        evidence = scope_evidence + title_evidence
+        if page.page_number in excluded_pages:
+            score *= 0.02
+            evidence_pre = ["penalty:exclude_previous_page_for_force_rerun"]
+        else:
+            evidence_pre = []
+        evidence = evidence_pre + scope_evidence + title_evidence
         evidence += wrong_table_evidence
         evidence.append(f"signature_score:{target_anchor_score:.3f}")
         evidence.append(f"signature_hits:{len(set(normalize_text(anchor) for anchor in matched_anchors))}")
         evidence.append(f"scope_signature_score:{scope_signature_score:.3f}")
         evidence.append(f"scope_signature_hits:{len(set(normalize_text(anchor) for anchor in scope_signature_hits))}")
+        evidence.append(f"scope_signature_coverage:{scope_signature_coverage:.3f}")
         evidence.append(f"opposite_scope_signature_score:{opposite_signature_score:.3f}")
+        evidence.append(f"opposite_scope_signature_coverage:{opposite_signature_coverage:.3f}")
         if target_table in {"BILAN_ACTIF", "BILAN_PASSIF"}:
             evidence.append(f"balance_layout_score:{_balance_layout_score(index.pages, i, norm_page_text, target_table):.3f}")
         if target_table == "CPC":
@@ -148,6 +179,8 @@ def retrieve_candidate_pages(
                 bm25_score=float(bm25),
                 vector_score=float(vector),
                 target_anchor_score=float(target_anchor_score),
+                scope_signature_score=float(scope_signature_score),
+                opposite_scope_signature_score=float(opposite_signature_score),
                 scope_score=float(scope_score),
                 sector_score=float(sector_score),
                 title_score=float(title_score),
@@ -156,7 +189,37 @@ def retrieve_candidate_pages(
             )
         )
     results.sort(key=lambda r: (-r.score, r.page.page_number))
+    results = _apply_retrieval_tiebreak(results)
     return results[: cfg.top_k_pages]
+
+
+def filter_retrieved_pages_for_requested_scope(
+    retrieved: list[RetrievedPage],
+    requested_scope: str,
+) -> list[RetrievedPage]:
+    """Remove pages whose text is clearly the *other* scope (sociaux vs consolidés).
+
+    After ``force_page`` excludes the previous page, the next-best hit is often another
+    CPC (e.g. comptes sociaux) with a similar embedding; this keeps alternates aligned
+    with the user's choice (e.g. consolidés only).
+    """
+    if not retrieved or requested_scope not in {"comptes_consolides", "comptes_sociaux"}:
+        return retrieved
+
+    kept: list[RetrievedPage] = []
+    for r in retrieved:
+        norm = normalize_text(r.page.page_text)
+        if requested_scope == "comptes_consolides":
+            social_only = _looks_like_formal_social_statement(norm) and not _looks_like_formal_consolidated_statement(norm)
+            if social_only:
+                continue
+        else:
+            consolid_only = _looks_like_formal_consolidated_statement(norm) and not _looks_like_formal_social_statement(norm)
+            if consolid_only:
+                continue
+        kept.append(r)
+
+    return kept if kept else retrieved
 
 
 def _tokenize(text: str) -> list[str]:
@@ -185,13 +248,51 @@ def _bm25_scores(docs: list[str], query: str, k1: float = 1.5, b: float = 0.75) 
     return _minmax(raw_scores)
 
 
+def _apply_retrieval_tiebreak(results: list[RetrievedPage]) -> list[RetrievedPage]:
+    """If the best pages tie on blended score, prefer stronger scope row-label signature + anchors."""
+    if not results:
+        return results
+    if len(results) < 2:
+        results[0].evidence.append("retrieval_margin:single_candidate")
+        return results
+
+    margin = results[0].score - results[1].score
+    head_n = min(_TIEBREAK_HEAD, len(results))
+    head = results[:head_n]
+    tail = results[head_n:]
+
+    if margin >= _RETRIEVAL_TIE_MARGIN:
+        head_sorted = head
+    else:
+
+        def structural_key(r: RetrievedPage) -> tuple[float, float, float, float, int]:
+            return (
+                -(
+                    0.48 * r.scope_signature_score
+                    + 0.32 * r.target_anchor_score
+                    + 0.15 * r.title_score
+                    + 0.05 * r.scope_score
+                ),
+                -r.scope_signature_score,
+                -r.target_anchor_score,
+                -r.title_score,
+                r.page.page_number,
+            )
+
+        head_sorted = sorted(head, key=structural_key)
+        if head_sorted[0].page.page_number != head[0].page.page_number:
+            head_sorted[0].evidence.append("retrieval_tiebreak:scope_signature_and_anchors")
+
+    merged = head_sorted + tail
+    merged[0].evidence.append(f"retrieval_margin:{margin:.4f}")
+    return merged
+
+
 def _vector_scores(index: PageAwareIndex, query: str, model_name: str) -> list[float]:
     if index.embeddings is None or len(index.pages) == 0:
         return [0.0 for _ in index.pages]
     try:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(model_name)
+        model = get_sentence_transformer(model_name)
         q = model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0].astype("float32")
         if index.faiss_index is not None:
             q_norm = q / (np.linalg.norm(q) + 1e-9)
@@ -292,7 +393,7 @@ def _target_anchor_score(text: str, target_table: str, sector: str) -> tuple[flo
     return max(0.0, min(raw, 1.0)), anchor_hits
 
 
-def _scope_signature_score(text: str, target_table: str, sector: str, scope: str) -> tuple[float, list[str], float]:
+def _scope_signature_score(text: str, target_table: str, sector: str, scope: str) -> tuple[float, list[str], float, float, float]:
     """Score the requested scope's own row-label signature against the opposite scope.
 
     FINANCIAL_ANCHORS is intentionally broad per sector/table. This extra layer
@@ -306,7 +407,9 @@ def _scope_signature_score(text: str, target_table: str, sector: str, scope: str
     other_hits = keyword_hits(text, other_anchors)
     requested_score = _table_signature_coverage(requested_hits, requested_anchors, target_table)
     other_score = _table_signature_coverage(other_hits, other_anchors, target_table)
-    return requested_score, requested_hits, other_score
+    requested_ratio = _table_signature_coverage_ratio(requested_hits, requested_anchors)
+    other_ratio = _table_signature_coverage_ratio(other_hits, other_anchors)
+    return requested_score, requested_hits, other_score, requested_ratio, other_ratio
 
 
 def _apply_scope_signature_dominance(
@@ -315,6 +418,7 @@ def _apply_scope_signature_dominance(
     scope_signature_score: float,
     opposite_signature_score: float,
     scope_signature_hits: list[str],
+    scope_signature_coverage: float,
     target_table: str,
     title_score: float,
     scope_score: float,
@@ -336,13 +440,27 @@ def _apply_scope_signature_dominance(
         "CPC": 12,
     }.get(target_table, 10)
 
-    # Strong signature pages should dominate BM25/vector noise.
-    if unique_hit_count >= min_dense_hits and scope_signature_score >= 0.45:
-        score = max(score, 0.62 + 0.34 * scope_signature_score)
-    elif scope_signature_score >= 0.55:
-        score = max(score, 0.50 + 0.32 * scope_signature_score)
+    # Strong signature pages should dominate BM25/vector noise. A high
+    # percentage of the user's labels is the clearest signal that this is the
+    # target table, not a note page with a few generic financial words.
+    if scope_signature_coverage >= 0.80 and unique_hit_count >= min_dense_hits:
+        score = max(score, 0.82 + 0.16 * scope_signature_coverage)
+    elif scope_signature_coverage >= 0.70 and unique_hit_count >= min_dense_hits:
+        score = max(score, 0.72 + 0.18 * scope_signature_coverage)
+    elif scope_signature_coverage >= 0.60 and unique_hit_count >= min_dense_hits:
+        score = max(score, 0.58 + 0.20 * scope_signature_coverage)
     elif unique_hit_count <= 4 and scope_signature_score < 0.25:
         score *= 0.55
+
+    # Medium/low coverage is a fallback only. The user-provided signatures are
+    # full table row lists, so finding roughly half the labels is not enough to
+    # make a page a high-confidence winner.
+    if 0.0 < scope_signature_coverage < 0.50:
+        score = min(score * 0.72, 0.48)
+    elif 0.50 <= scope_signature_coverage < 0.60:
+        score = min(score * 0.80, 0.58)
+    elif 0.60 <= scope_signature_coverage < 0.70 and title_score < 0.50:
+        score = min(score, 0.72)
 
     # If the opposite scope looks more like the page, keep it out.
     if opposite_signature_score > scope_signature_score + 0.12:
@@ -355,7 +473,12 @@ def _apply_scope_signature_dominance(
 
     # Scope metadata is still useful, but labels should save a page when the
     # scope detector is weak and the table signature is very clear.
-    if scope_score <= 0.20 and scope_signature_score >= 0.70 and unique_hit_count >= min_dense_hits:
+    if (
+        scope_score <= 0.20
+        and scope_signature_score >= 0.70
+        and scope_signature_coverage >= 0.70
+        and unique_hit_count >= min_dense_hits
+    ):
         score = max(score, 0.70 + 0.22 * scope_signature_score)
 
     return max(0.0, min(score, 1.0))
@@ -383,9 +506,9 @@ def _table_signature_coverage(anchor_hits: list[str], anchors: list[str], target
     }
     saturation = min(hit_count, saturation_targets.get(target_table, 18)) / saturation_targets.get(target_table, 18)
 
-    # Coverage rewards the full table shape; saturation keeps compact S1 pages
-    # competitive even when labels are abbreviated in the PDF.
-    score = 0.65 * saturation + 0.35 * min(coverage * 2.2, 1.0)
+    # Coverage rewards the full table shape. Saturation is secondary: a page
+    # with 15/29 labels should remain medium/weak, not look like a full match.
+    score = 0.25 * saturation + 0.75 * coverage
 
     required_groups = _required_signature_groups(target_table)
     if required_groups:
@@ -401,6 +524,14 @@ def _table_signature_coverage(anchor_hits: list[str], anchors: list[str], target
     elif hit_count <= 6:
         score *= 0.70
     return max(0.0, min(score, 1.0))
+
+
+def _table_signature_coverage_ratio(anchor_hits: list[str], anchors: list[str]) -> float:
+    unique_hits = {normalize_text(hit) for hit in anchor_hits if normalize_text(hit)}
+    unique_anchors = {normalize_text(anchor) for anchor in anchors if normalize_text(anchor)}
+    if not unique_anchors:
+        return 0.0
+    return max(0.0, min(len(unique_hits) / len(unique_anchors), 1.0))
 
 
 def _required_signature_groups(target_table: str) -> list[list[str]]:
@@ -529,9 +660,12 @@ def _title_score(text: str, detected_titles: list[str], target_table: str) -> tu
 
 def _has_strong_table_title(norm_text: str, target_table: str) -> bool:
     if target_table == "BILAN_ACTIF":
+        if looks_like_balance_currency_ventilation_page(norm_text):
+            return _looks_like_main_balance_statement(norm_text, "BILAN_ACTIF")
         return bool(
             _looks_like_main_balance_statement(norm_text, target_table)
             or re.search(r"\bbilan\s+actif\b", norm_text)
+            or re.search(r"\bbilan\s+social\b", norm_text[:3500])
             or re.search(r"\bactif\b", norm_text[:900])
             or "actif ifrs" in norm_text[:3000]
             or "actif consolide" in norm_text[:3000]
@@ -540,9 +674,12 @@ def _has_strong_table_title(norm_text: str, target_table: str) -> bool:
             or ("en milliers de mad" in norm_text[:1800] and " actif " in f" {norm_text[:1800]} " and "total general" in norm_text)
         )
     if target_table == "BILAN_PASSIF":
+        if looks_like_balance_currency_ventilation_page(norm_text):
+            return _looks_like_main_balance_statement(norm_text, "BILAN_PASSIF")
         return bool(
             _looks_like_main_balance_statement(norm_text, target_table)
             or re.search(r"\bbilan\s+passif\b", norm_text)
+            or re.search(r"\bbilan\s+social\b", norm_text[:3500])
             or re.search(r"\bpassif\b", norm_text[:900])
             or "passif ifrs" in norm_text[:3000]
             or "passif consolide" in norm_text[:3000]
@@ -568,6 +705,8 @@ def _has_strong_table_title(norm_text: str, target_table: str) -> bool:
                     "compte de resultat consolide",
                     "compte de produits et charges consolide",
                     "compte de resultat ifrs",
+                    "produits des activites ordinaires",
+                    "resultat net consolide",
                 ]
             )
         return has_title and (
@@ -598,7 +737,23 @@ def _looks_like_note_repeat(norm_text: str) -> bool:
 
 def _looks_like_cpc_table(norm_text: str) -> bool:
     early = norm_text[:2500]
-    return any(
+    compact_consolidated_hits = sum(
+        1
+        for marker in [
+            "produits des activites ordinaires",
+            "produits d'exploitation",
+            "charges d'exploitation",
+            "resultat d'exploitation",
+            "resultat operationnel",
+            "resultat financier",
+            "resultat avant impot",
+            "resultat net consolide",
+            "resultat net part du groupe",
+            "quote part des societes mises en equivalence",
+        ]
+        if marker in early
+    )
+    return compact_consolidated_hits >= 4 or any(
         marker in early
         for marker in [
             "designation operations",
@@ -616,7 +771,14 @@ def _looks_like_cpc_table(norm_text: str) -> bool:
     )
 
 
-def _wrong_table_penalty(norm_text: str, target_table: str) -> tuple[float, list[str]]:
+def _wrong_table_penalty(
+    norm_text: str,
+    target_table: str,
+    *,
+    scope_signature_coverage: float = 0.0,
+    scope_signature_score: float = 0.0,
+    balance_layout_score: float = 0.0,
+) -> tuple[float, list[str]]:
     if target_table == "CPC":
         if _looks_like_cashflow_statement(norm_text) and not _has_cpc_title_anywhere(norm_text):
             return 0.12, ["penalty:cashflow_not_cpc"]
@@ -627,7 +789,17 @@ def _wrong_table_penalty(norm_text: str, target_table: str) -> tuple[float, list
     if target_table in {"BILAN_ACTIF", "BILAN_PASSIF"}:
         if _looks_like_cashflow_statement(norm_text) and not _has_strong_table_title(norm_text, target_table):
             return 0.15, ["penalty:cashflow_not_balance"]
-        if _has_strong_table_title(norm_text, "CPC") and not _has_strong_table_title(norm_text, target_table):
+        # S1/compact reports often put ACTIF + CPC + PASSIF on the same PDF page.
+        # If the requested balance-sheet signature is dense, the page is a valid
+        # combined page and must not be rejected merely because a CPC title is
+        # also present elsewhere on the page.
+        if (
+            _has_strong_table_title(norm_text, "CPC")
+            and not _has_strong_table_title(norm_text, target_table)
+            and scope_signature_coverage < 0.70
+            and scope_signature_score < 0.78
+            and balance_layout_score < 0.75
+        ):
             return 0.20, ["penalty:cpc_not_balance"]
         if target_table == "BILAN_ACTIF" and _looks_like_passif_only_statement(norm_text):
             return 0.20, ["penalty:passif_not_actif"]
@@ -646,6 +818,7 @@ def _looks_like_balance_statement(norm_text: str) -> bool:
             "bilan (passif)",
             "bilan actif",
             "bilan passif",
+            "bilan social",
         ]
     )
     has_balance_totals = any(marker in norm_text for marker in ["total actif", "total passif", "total general i"])
@@ -704,6 +877,7 @@ def _looks_like_main_balance_statement(norm_text: str, target_table: str) -> boo
             "bilan passif",
             "bilan (actif)",
             "bilan (passif)",
+            "bilan social",
         ]
     )
     if target_table == "BILAN_ACTIF" and not has_balance_title:
@@ -734,7 +908,15 @@ def _looks_like_main_balance_statement(norm_text: str, target_table: str) -> boo
         ]
         title_marker = any(
             marker in statement_window
-            for marker in [" actif ", "actif notes", "actif 30/06", "actif 31/12", "bilan actif", "bilan consolide"]
+            for marker in [
+                " actif ",
+                "actif notes",
+                "actif 30/06",
+                "actif 31/12",
+                "bilan actif",
+                "bilan consolide",
+                "bilan social",
+            ]
         )
     elif target_table == "BILAN_PASSIF":
         final_total = any(marker in norm_text for marker in ["total passif", "total du passif", "total general i ii iii"])
@@ -750,7 +932,15 @@ def _looks_like_main_balance_statement(norm_text: str, target_table: str) -> boo
         ]
         title_marker = any(
             marker in statement_window
-            for marker in [" passif ", "passif notes", "passif 30/06", "passif 31/12", "bilan passif", "bilan consolide"]
+            for marker in [
+                " passif ",
+                "passif notes",
+                "passif 30/06",
+                "passif 31/12",
+                "bilan passif",
+                "bilan consolide",
+                "bilan social",
+            ]
         )
     else:
         return False
@@ -823,6 +1013,7 @@ def _has_balance_header(norm_text: str, target_table: str) -> bool:
                 "bilan actif",
                 "bilan (actif)",
                 "bilan consolide",
+                "bilan social",
             ]
         )
     if target_table == "BILAN_PASSIF":
@@ -836,6 +1027,7 @@ def _has_balance_header(norm_text: str, target_table: str) -> bool:
                 "bilan passif",
                 "bilan (passif)",
                 "bilan consolide",
+                "bilan social",
             ]
         )
     return False

@@ -4,7 +4,13 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from .keyword_dictionary import FINANCIAL_ANCHORS, TABLE_TITLES, keyword_hits
+from .keyword_dictionary import (
+    FINANCIAL_ANCHORS,
+    TABLE_TITLES,
+    keyword_hits,
+    looks_like_balance_currency_ventilation_page,
+    scoped_table_signature,
+)
 from .models import RetrievedPage, TableCandidate
 from .utils import clamp_bbox, normalize_text, write_json
 
@@ -85,13 +91,25 @@ def localize_table_candidates(
     debug_dir: str | Path | None = None,
 ) -> list[TableCandidate]:
     candidates: list[TableCandidate] = []
-    for retrieved in retrieved_pages[:max_pages]:
-        candidates.extend(_localize_on_page(pdf_path, retrieved, target_table, scope, sector))
+    doc = fitz.open(pdf_path)
+    try:
+        for retrieved in _pages_for_localization(retrieved_pages, max_pages=max_pages, target_table=target_table):
+            candidates.extend(_localize_on_page(doc, pdf_path, retrieved, target_table, scope, sector))
+    finally:
+        doc.close()
     retrieval_scores = {r.page.page_number: r.score for r in retrieved_pages}
     scope_scores = {r.page.page_number: r.scope_score for r in retrieved_pages}
+    signature_scores = {r.page.page_number: r.scope_signature_score for r in retrieved_pages}
+    anchor_scores = {r.page.page_number: r.target_anchor_score for r in retrieved_pages}
     candidates.sort(
         key=lambda c: (
-            -(0.60 * retrieval_scores.get(c.page_number, 0.0) + 0.30 * c.confidence + 0.10 * scope_scores.get(c.page_number, 0.0)),
+            -_candidate_rank_score(
+                c,
+                retrieval_score=retrieval_scores.get(c.page_number, 0.0),
+                scope_score=scope_scores.get(c.page_number, 0.0),
+                signature_score=signature_scores.get(c.page_number, 0.0),
+                anchor_score=anchor_scores.get(c.page_number, 0.0),
+            ),
             c.page_number,
         )
     )
@@ -100,7 +118,59 @@ def localize_table_candidates(
     return candidates
 
 
+def _pages_for_localization(
+    retrieved_pages: list[RetrievedPage],
+    *,
+    max_pages: int,
+    target_table: str,
+) -> list[RetrievedPage]:
+    selected = list(retrieved_pages[:max_pages])
+    selected_pages = {item.page.page_number for item in selected}
+    for retrieved in retrieved_pages[max_pages:]:
+        if retrieved.page.page_number in selected_pages:
+            continue
+        if _should_include_signature_candidate(retrieved, target_table):
+            selected.append(retrieved)
+            selected_pages.add(retrieved.page.page_number)
+    return selected
+
+
+def _should_include_signature_candidate(retrieved: RetrievedPage, target_table: str) -> bool:
+    if target_table == "CPC":
+        return retrieved.scope_signature_score >= 0.30 or (
+            retrieved.scope_signature_score >= 0.18 and retrieved.target_anchor_score >= 0.25
+        )
+    return retrieved.scope_signature_score >= 0.45
+
+
+def _candidate_rank_score(
+    candidate: TableCandidate,
+    *,
+    retrieval_score: float,
+    scope_score: float,
+    signature_score: float,
+    anchor_score: float,
+) -> float:
+    score = (
+        0.50 * retrieval_score
+        + 0.25 * candidate.confidence
+        + 0.10 * scope_score
+        + 0.12 * signature_score
+        + 0.03 * anchor_score
+    )
+    evidence = " ".join(candidate.evidence).lower()
+    if candidate.table_type == "CPC":
+        if "fallback:page_region" in evidence and signature_score < 0.10 and anchor_score < 0.10:
+            score -= 0.16
+        if "title_confirmed:false" in evidence and signature_score < 0.15:
+            score -= 0.10
+        if signature_score >= 0.35:
+            score += 0.08
+    return max(0.0, score)
+
+
 def _localize_on_page(
+    doc: fitz.Document,
     pdf_path: str,
     retrieved: RetrievedPage,
     target_table: str,
@@ -108,13 +178,16 @@ def _localize_on_page(
     sector: str,
 ) -> list[TableCandidate]:
     page_num = retrieved.page.page_number
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[page_num - 1]
-        page_rect = page.rect
-        blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
-    finally:
-        doc.close()
+    page = doc[page_num - 1]
+    page_rect = page.rect
+    lines_preview = _extract_lines(page)
+    page_joined_preview = " ".join(norm for *_coords, _text, norm in lines_preview)
+    if target_table in {"BILAN_ACTIF", "BILAN_PASSIF"} and looks_like_balance_currency_ventilation_page(
+        page_joined_preview
+    ):
+        return []
+
+    blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
 
     typed_blocks = []
     for b in blocks:
@@ -132,6 +205,7 @@ def _localize_on_page(
         scope,
         sector,
         retrieved,
+        doc=doc,
     )
     if line_header_candidate is not None:
         return [line_header_candidate]
@@ -149,6 +223,7 @@ def _localize_on_page(
                 sector,
                 target_blocks,
                 retrieved,
+                doc=doc,
             )
         ]
 
@@ -179,14 +254,13 @@ def _candidate_from_line_header(
     scope: str,
     sector: str,
     retrieved: RetrievedPage,
+    *,
+    doc: fitz.Document,
 ) -> TableCandidate | None:
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[page_num - 1]
-        lines = _extract_lines(page)
-        all_blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
-    finally:
-        doc.close()
+    """Localize using line geometry. Pass ``doc`` as keyword so call sites stay 8 positional + shared document."""
+    page = doc[page_num - 1]
+    lines = _extract_lines(page)
+    all_blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
 
     if target_table == "CPC":
         return _candidate_from_cpc_line_header(
@@ -204,8 +278,21 @@ def _candidate_from_line_header(
     if target_table not in {"BILAN_ACTIF", "BILAN_PASSIF"}:
         return None
 
+    page_joined = " ".join(norm for *_coords, _text, norm in lines)
+    if looks_like_balance_currency_ventilation_page(page_joined):
+        return None
+
     wanted_header = "actif" if target_table == "BILAN_ACTIF" else "passif"
     headers = [line for line in lines if _is_exact_table_header(line[5], wanted_header)]
+    bilan_social_fallback = False
+    if not headers:
+        bs_lines = _lines_bilan_social_title_lines(lines)
+        if target_table == "BILAN_ACTIF" and bs_lines:
+            headers = [bs_lines[0]]
+            bilan_social_fallback = True
+        elif target_table == "BILAN_PASSIF" and len(bs_lines) >= 2:
+            headers = [bs_lines[1]]
+            bilan_social_fallback = True
     if not headers:
         return None
 
@@ -248,6 +335,19 @@ def _candidate_from_line_header(
         line_boundary_y=line_boundary_y,
         end_anchor_y=end_anchor_y,
     )
+    signature_bounds = _signature_vertical_bounds(
+        lines,
+        target_table=target_table,
+        scope=scope,
+        sector=sector,
+        y_start=y_start,
+        max_y=next_y,
+        x_bounds=column_bounds,
+    )
+    if signature_bounds is not None:
+        sig_y0, sig_y1, sig_hits, sig_cov = signature_bounds
+        y_start = min(y_start, sig_y0)
+        next_y = max(next_y, min(height, sig_y1 + _signature_bottom_padding(target_table)))
 
     if column_bounds is None:
         x_start, x_end = 0.0, width
@@ -274,6 +374,13 @@ def _candidate_from_line_header(
         f"end_y:{next_y:.1f}",
         "title_confirmed:True",
     ]
+    if signature_bounds is not None:
+        evidence.append(f"signature_region_hits:{sig_hits}")
+        evidence.append(f"signature_region_coverage:{sig_cov:.3f}")
+    if bilan_social_fallback:
+        evidence.append(
+            "header_bilan_social:second" if target_table == "BILAN_PASSIF" else "header_bilan_social:first"
+        )
     if retrieved.scope_score <= 0:
         confidence = min(confidence, 0.45)
 
@@ -368,12 +475,29 @@ def _candidate_from_cpc_line_header(
         line_boundary_y=line_boundary_y,
         end_anchor_y=end_anchor_y,
     )
+    signature_bounds = _signature_vertical_bounds(
+        lines,
+        target_table="CPC",
+        scope=scope,
+        sector=sector,
+        y_start=y_start,
+        max_y=next_y,
+        x_bounds=None,
+    )
+    if signature_bounds is not None:
+        sig_y0, sig_y1, sig_hits, sig_cov = signature_bounds
+        y_start = min(y_start, sig_y0)
+        next_y = max(next_y, min(height, sig_y1 + _signature_bottom_padding("CPC")))
 
     cpc_bounds = _cpc_horizontal_bounds(lines, y_start, next_y, width)
     if cpc_bounds is None:
         x_start, x_end = 0.0, width
     else:
         x_start, x_end = cpc_bounds
+
+    x_start, x_end = _cpc_merge_x_with_row_band(
+        x_start, x_end, width, lines, y_start, next_y
+    )
 
     for b in all_blocks:
         bx0, by0, bx1, _by1 = map(float, b[:4])
@@ -392,6 +516,9 @@ def _candidate_from_cpc_line_header(
         f"end_y:{next_y:.1f}",
         "title_confirmed:True",
     ]
+    if signature_bounds is not None:
+        evidence.append(f"signature_region_hits:{sig_hits}")
+        evidence.append(f"signature_region_coverage:{sig_cov:.3f}")
     return TableCandidate(
         pdf_id=Path(pdf_path).stem,
         page_number=page_num,
@@ -414,14 +541,12 @@ def _candidate_from_block_group(
     sector: str,
     target_blocks,
     retrieved: RetrievedPage,
+    *,
+    doc: fitz.Document,
 ) -> TableCandidate:
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[page_num - 1]
-        all_blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
-        lines = _extract_lines(page)
-    finally:
-        doc.close()
+    page = doc[page_num - 1]
+    all_blocks = [b for b in page.get_text("blocks") if len(b) >= 5 and str(b[4]).strip()]
+    lines = _extract_lines(page)
 
     y_start = min(float(b[1]) for _, b in target_blocks)
     x_start = min(float(b[0]) for _, b in target_blocks)
@@ -459,6 +584,19 @@ def _candidate_from_block_group(
         line_boundary_y=line_boundary_y,
         end_anchor_y=end_anchor_y,
     )
+    signature_bounds = _signature_vertical_bounds(
+        lines,
+        target_table=target_table,
+        scope=scope,
+        sector=sector,
+        y_start=y_start,
+        max_y=next_y,
+        x_bounds=column_bounds,
+    )
+    if signature_bounds is not None:
+        sig_y0, sig_y1, sig_hits, sig_cov = signature_bounds
+        y_start = min(y_start, sig_y0)
+        next_y = max(next_y, min(height, sig_y1 + _signature_bottom_padding(target_table)))
 
     # Capture text blocks in the same horizontal band. For side-by-side actif/passif,
     # keep the target column; for stacked layouts, use full table width.
@@ -469,7 +607,7 @@ def _candidate_from_block_group(
     if len(same_row) == 1:
         title_center = (float(same_row[0][0]) + float(same_row[0][2])) / 2
         same_y_titles = [
-            b for t, b in _typed_blocks_for_page(pdf_path, page_num, sector)
+            b for t, b in _typed_blocks_for_page(page, sector)
             if abs(float(b[1]) - y_start) <= 24
         ]
         same_y_titles = sorted(same_y_titles, key=lambda b: b[0])
@@ -490,6 +628,11 @@ def _candidate_from_block_group(
         cpc_bounds = _cpc_horizontal_bounds(lines, y_start, next_y, width)
         if cpc_bounds is not None:
             x_start, x_end = cpc_bounds
+
+    if target_table == "CPC":
+        x_start, x_end = _cpc_merge_x_with_row_band(
+            x_start, x_end, width, lines, y_start, next_y
+        )
 
     for b in all_blocks:
         bx0, by0, bx1, by1 = map(float, b[:4])
@@ -523,6 +666,9 @@ def _candidate_from_block_group(
         f"end_y:{next_y:.1f}",
         f"title_confirmed:{title_confirmed}",
     ]
+    if signature_bounds is not None:
+        evidence.append(f"signature_region_hits:{sig_hits}")
+        evidence.append(f"signature_region_coverage:{sig_cov:.3f}")
     confidence = _adjust_balance_candidate_confidence(
         confidence=confidence,
         evidence=evidence,
@@ -592,13 +738,158 @@ def _adjust_balance_candidate_confidence(
     return confidence
 
 
-def _typed_blocks_for_page(pdf_path: str, page_num: int, sector: str):
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[page_num - 1]
-        return [(t, b) for b in page.get_text("blocks") if (t := _detect_block_type(str(b[4]), sector))]
-    finally:
-        doc.close()
+def _signature_vertical_bounds(
+    lines: list[tuple[float, float, float, float, str, str]],
+    *,
+    target_table: str,
+    scope: str,
+    sector: str,
+    y_start: float,
+    max_y: float,
+    x_bounds: tuple[float, float] | list[float] | None = None,
+) -> tuple[float, float, int, float] | None:
+    """Find the dense vertical region covered by the full scoped row-label list.
+
+    Page retrieval already uses these signatures to choose the page. Here we use
+    the same labels geometrically: the first and last matched row labels are a
+    strong hint for where the table lives inside the selected page.
+    """
+    labels = scoped_table_signature(sector, scope, target_table)
+    if not labels:
+        return None
+
+    label_norms = [(label, normalize_text(label)) for label in labels if normalize_text(label)]
+    if not label_norms:
+        return None
+
+    matched: list[tuple[float, float, str]] = []
+    x0_bound = float(x_bounds[0]) if x_bounds is not None else None
+    x1_bound = float(x_bounds[1]) if x_bounds is not None else None
+    for x0, y0, x1, y1, text, norm in lines:
+        if y1 < y_start - 45 or y0 > max_y + 8:
+            continue
+        if x0_bound is not None and x1_bound is not None:
+            center_x = (x0 + x1) / 2
+            if not x0_bound - 8 <= center_x <= x1_bound + 8:
+                continue
+        loose_line = _loose_label_phrase(norm)
+        for label, label_norm in label_norms:
+            if label_norm in norm or _loose_label_phrase(label_norm) in loose_line:
+                matched.append((float(y0), float(y1), label))
+                break
+
+    if not matched:
+        return None
+
+    unique_hits = {normalize_text(label) for *_ys, label in matched}
+    coverage = len(unique_hits) / max(len({norm for _label, norm in label_norms}), 1)
+    min_hits = _signature_region_min_hits(target_table, len(label_norms))
+    if len(unique_hits) < min_hits and coverage < 0.35:
+        return None
+
+    matched.sort(key=lambda item: item[0])
+    # Drop isolated early/late generic labels if the dense cluster is elsewhere.
+    clustered = _densest_vertical_label_cluster(matched)
+    if clustered:
+        matched = clustered
+
+    return min(y0 for y0, _y1, _label in matched), max(y1 for _y0, y1, _label in matched), len(unique_hits), coverage
+
+
+def _densest_vertical_label_cluster(
+    matched: list[tuple[float, float, str]],
+    *,
+    max_gap: float = 95.0,
+) -> list[tuple[float, float, str]]:
+    if len(matched) <= 2:
+        return matched
+    clusters: list[list[tuple[float, float, str]]] = []
+    current = [matched[0]]
+    for item in matched[1:]:
+        if item[0] - current[-1][1] <= max_gap:
+            current.append(item)
+        else:
+            clusters.append(current)
+            current = [item]
+    clusters.append(current)
+    return max(clusters, key=lambda cluster: (len({normalize_text(label) for *_ys, label in cluster}), len(cluster)))
+
+
+def _signature_region_min_hits(target_table: str, label_count: int) -> int:
+    if label_count <= 15:
+        return max(4, int(label_count * 0.35))
+    if target_table == "CPC":
+        return max(8, int(label_count * 0.22))
+    return max(7, int(label_count * 0.25))
+
+
+def _signature_bottom_padding(target_table: str) -> float:
+    return 16.0 if target_table == "CPC" else 12.0
+
+
+def _loose_label_phrase(text: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", " ", normalize_text(text)).strip()
+
+
+def _typed_blocks_for_page(page, sector: str):
+    return [(t, b) for b in page.get_text("blocks") if (t := _detect_block_type(str(b[4]), sector))]
+
+
+def _disambiguate_bilan_actif_passif_block(norm: str, text: str, sector: str) -> str | None:
+    """Both balance TABLE_TITLES can match (e.g. shared « bilan social »); use row anchors."""
+    anchors_a = FINANCIAL_ANCHORS.get(sector, {}).get("BILAN_ACTIF", [])
+    anchors_p = FINANCIAL_ANCHORS.get(sector, {}).get("BILAN_PASSIF", [])
+    ca = len(keyword_hits(text, anchors_a))
+    cp = len(keyword_hits(text, anchors_p))
+    if cp > ca:
+        return "BILAN_PASSIF"
+    if ca > cp:
+        return "BILAN_ACTIF"
+    if any(
+        x in norm
+        for x in (
+            "depots de la clientele",
+            "dettes envers les etablissements de credit",
+            "comptes a vue crediteurs",
+            "comptes d epargne",
+            "titres de creance emis",
+            "emprunts obligataires",
+            "report a nouveau",
+            "resultat net de l exercice",
+            "total du passif",
+        )
+    ):
+        return "BILAN_PASSIF"
+    if any(
+        x in norm
+        for x in (
+            "creances sur la clientele",
+            "titres de transaction",
+            "immobilisations corporelles",
+            "prets et creances sur la clientele",
+            "total de l actif",
+            "total actif",
+        )
+    ):
+        return "BILAN_ACTIF"
+    if len(norm) < 72 and "bilan social" in norm:
+        return None
+    return "BILAN_ACTIF"
+
+
+def _lines_bilan_social_title_lines(
+    lines: list[tuple[float, float, float, float, str, str]],
+) -> list[tuple[float, float, float, float, str, str]]:
+    out: list[tuple[float, float, float, float, str, str]] = []
+    for line in lines:
+        n = line[5]
+        if n == "bilan social":
+            out.append(line)
+        elif n.startswith("bilan social ") and len(n) <= 48:
+            out.append(line)
+    return out
 
 
 def _detect_block_type(text: str, sector: str) -> str | None:
@@ -621,6 +912,7 @@ def _detect_block_type(text: str, sector: str) -> str | None:
             "bilan (actif)",
             "bilan (passif)",
             "bilan consolide",
+            "bilan social",
             "compte de produits",
             "compte de resultat",
             "etat du resultat",
@@ -628,13 +920,25 @@ def _detect_block_type(text: str, sector: str) -> str | None:
     )
     if any(marker in norm for marker in non_statement_markers) and not has_statement_title:
         return None
-    for table_type, titles in TABLE_TITLES.items():
-        if keyword_hits(norm, titles):
+    matched_types = [tt for tt, titles in TABLE_TITLES.items() if keyword_hits(norm, titles)]
+    if not matched_types:
+        best_type: str | None = None
+        best_n = 0
+        for table_type, anchors in FINANCIAL_ANCHORS.get(sector, {}).items():
+            n = len(keyword_hits(text, anchors))
+            if n >= 2 and n > best_n:
+                best_n = n
+                best_type = table_type
+        return best_type
+    if "BILAN_ACTIF" in matched_types and "BILAN_PASSIF" in matched_types:
+        resolved = _disambiguate_bilan_actif_passif_block(norm, text, sector)
+        if resolved is not None:
+            return resolved
+        return None
+    for table_type in TABLE_TITLES:
+        if table_type in matched_types:
             return table_type
-    for table_type, anchors in FINANCIAL_ANCHORS.get(sector, {}).items():
-        if len(keyword_hits(norm, anchors)) >= 2:
-            return table_type
-    return None
+    return matched_types[0]
 
 
 def _extract_lines(page) -> list[tuple[float, float, float, float, str, str]]:
@@ -679,9 +983,19 @@ def _first_boundary_y(
     return None
 
 
+def _is_passif_equity_oci_row(norm_line: str) -> bool:
+    """IFRS passif rows under capitaux propres; share phrases with CPC/EGP titles in _NEGATIVE_BOUNDARY_MARKERS."""
+    if "gains et pertes" not in norm_line:
+        return False
+    # "capitaux propre" matches both capitaux propre(s) after normalize_text
+    return "capitaux propre" in norm_line
+
+
 def _is_boundary_line(norm_line: str, markers: list[str], target_table: str) -> bool:
     # Avoid treating row labels like "Autres actifs" as a new ACTIF section.
     if target_table == "BILAN_PASSIF" and norm_line not in {"actif"} and norm_line.startswith("autres actif"):
+        return False
+    if target_table == "BILAN_PASSIF" and _is_passif_equity_oci_row(norm_line):
         return False
     for marker in markers:
         marker_norm = normalize_text(marker)
@@ -882,6 +1196,7 @@ def _is_layout_split_title(norm_line: str) -> bool:
     return (
         norm_line.startswith("bilan actif")
         or norm_line.startswith("bilan passif")
+        or norm_line.startswith("bilan social")
         or norm_line.startswith("bilan (actif)")
         or norm_line.startswith("bilan (passif)")
         or norm_line.startswith("compte de produits")
@@ -1005,6 +1320,117 @@ def _has_target_title(target_table: str, texts: list[str]) -> bool:
     return False
 
 
+_CPC_SKIP_RIGHT_COLUMN_MARKERS = (
+    "flux de tresorerie",
+    "tableau des flux de tresorerie",
+    "variation des capitaux propres",
+    "etat du resultat net",
+    "resultat net et gains",
+    "perimetre de consolidation",
+    "tableau de financement",
+    "attestation",
+)
+
+_CPC_ROW_LINE_HINTS = (
+    "total",
+    "produit",
+    "charge",
+    "resultat",
+    "marge",
+    "frais",
+    "impot",
+    "note",
+    "dotation",
+    "reprise",
+    "part du groupe",
+    "interet",
+    "commission",
+    "chiffre",
+    "exercice",
+    "precedent",
+    "brut",
+    "net",
+    "revenu",
+    "cout du risque",
+    "pnb",
+    "consolide",
+    "charges generales",
+    "produits d exploitation",
+    "charges d exploitation",
+)
+
+
+def _cpc_row_band_horizontal_extent(
+    lines: list[tuple[float, float, float, float, str, str]],
+    y_start: float,
+    y_end: float,
+    width: float,
+) -> tuple[float | None, float | None]:
+    """Horizontal span of CPC row-like lines in [y_start, y_end].
+
+    Two-column layouts often place the title on the right; `_cpc_horizontal_bounds`
+    then uses (title_x, page_width) and drops the label column. Row lines usually
+    span from the left margin through figures — union their x extents to recover
+    the full table width.
+    """
+    leftmost: float | None = None
+    rightmost: float | None = None
+
+    def consider(x0: float, x1: float, norm: str, cx: float) -> None:
+        nonlocal leftmost, rightmost
+        if any(marker in norm for marker in _CPC_SKIP_RIGHT_COLUMN_MARKERS) and cx > width * 0.52:
+            return
+        leftmost = x0 if leftmost is None else min(leftmost, x0)
+        rightmost = x1 if rightmost is None else max(rightmost, x1)
+
+    for x0, y0, x1, y1, text, norm in lines:
+        if y0 < y_start + 10 or y0 > y_end:
+            continue
+        if len(norm.strip()) < 3:
+            continue
+        cx = (x0 + x1) / 2
+        looks_row = any(h in norm for h in _CPC_ROW_LINE_HINTS) or any(
+            ch.isdigit() for ch in text
+        )
+        if not looks_row:
+            continue
+        consider(x0, x1, norm, cx)
+
+    if leftmost is None:
+        for x0, y0, x1, y1, text, norm in lines:
+            if y0 < y_start + 15 or y0 > y_end:
+                continue
+            if len(text.strip()) < 2:
+                continue
+            cx = (x0 + x1) / 2
+            if any(marker in norm for marker in _CPC_SKIP_RIGHT_COLUMN_MARKERS) and cx > width * 0.52:
+                continue
+            if any(ch.isdigit() for ch in text):
+                consider(x0, x1, norm, cx)
+
+    return leftmost, rightmost
+
+
+def _cpc_merge_x_with_row_band(
+    x_start: float,
+    x_end: float,
+    width: float,
+    lines: list[tuple[float, float, float, float, str, str]],
+    y_start: float,
+    y_end: float,
+) -> tuple[float, float]:
+    band_l, band_r = _cpc_row_band_horizontal_extent(lines, y_start, y_end, width)
+    pad = min(28.0, max(12.0, width * 0.035))
+    margin_l = min(20.0, width * 0.04)
+    if band_l is not None:
+        x_start = min(x_start, max(0.0, band_l - pad))
+    if band_r is not None:
+        x_end = max(x_end, min(width, band_r + pad))
+    if band_l is not None and x_start > band_l + 80:
+        x_start = max(margin_l, band_l - pad)
+    return x_start, x_end
+
+
 def _cpc_horizontal_bounds(
     lines: list[tuple[float, float, float, float, str, str]],
     y_start: float,
@@ -1033,16 +1459,7 @@ def _cpc_horizontal_bounds(
                 bx0 for bx0, by0, _bx1, _by1, _text, norm in lines
                 if y_start - 12 < by0 < y_end
                 and ((bx0 + _bx1) / 2) > width * 0.45
-                and any(marker in norm for marker in [
-                    "flux de tresorerie",
-                    "tableau des flux de tresorerie",
-                    "variation des capitaux propres",
-                    "etat du resultat net",
-                    "resultat net et gains",
-                    "perimetre de consolidation",
-                    "tableau de financement",
-                    "attestation",
-                ])
+                and any(marker in norm for marker in _CPC_SKIP_RIGHT_COLUMN_MARKERS)
             ]
             if right_side_boundaries:
                 return (0.0, min(right_side_boundaries) - 8.0)
@@ -1051,16 +1468,7 @@ def _cpc_horizontal_bounds(
         x0 for x0, y0, _x1, _y1, _text, norm in lines
         if y_start + 10 < y0 < y_end
         and ((x0 + _x1) / 2) > width * 0.45
-        and any(marker in norm for marker in [
-            "flux de tresorerie",
-            "tableau des flux de tresorerie",
-            "variation des capitaux propres",
-            "etat du resultat net",
-            "resultat net et gains",
-            "perimetre de consolidation",
-            "tableau de financement",
-            "attestation",
-        ])
+        and any(marker in norm for marker in _CPC_SKIP_RIGHT_COLUMN_MARKERS)
     ]
     if not right_boundaries:
         return None

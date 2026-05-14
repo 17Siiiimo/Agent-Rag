@@ -71,8 +71,12 @@ def load_page_chunks_cache(
         return None
     if any(p.pdf_id != pdf_id or p.company != company or int(p.year) != int(year) or p.sector != sector for p in pages):
         return None
-    if any(p.image_path and not Path(p.image_path).is_file() for p in pages):
-        return None
+    # Rendered page images are only needed for cropping, not for RAG indexing.
+    # Older caches may point to deleted _rendered_pages files; keep the text
+    # cache valid and let the orchestrator render selected pages on demand.
+    for page in pages:
+        if page.image_path and not Path(page.image_path).is_file():
+            page.image_path = ""
     return pages
 
 
@@ -113,9 +117,9 @@ def _encode_texts(texts: list[str], model_name: str) -> np.ndarray | None:
     if not texts:
         return None
     try:
-        from sentence_transformers import SentenceTransformer
+        from .embedding_model import get_sentence_transformer
 
-        model = SentenceTransformer(model_name)
+        model = get_sentence_transformer(model_name)
         emb = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return np.asarray(emb, dtype="float32")
     except Exception:

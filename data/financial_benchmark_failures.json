@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "failures": [
+    {
+      "id": "wafa_assurance_2025_annuel_comptes_consolides_bilan_actif",
+      "pdf_name": "wafa_assurance_2025_annuel.pdf",
+      "pdf_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\Émetteur\\wafa_assurance_2025_annuel.pdf",
+      "company": "Wafa Assurance",
+      "year": 2025,
+      "report_type": "annuel",
+      "scope": "comptes_consolides",
+      "sector": "assurance",
+      "target_table": "BILAN_ACTIF",
+      "expected_page": null,
+      "predicted_page": 20,
+      "failure_reason": "WRONG_PAGE",
+      "top_k_pages": [
+        20,
+        16,
+        22,
+        23,
+        17,
+        29,
+        19,
+        31
+      ],
+      "retrieval_scores": {
+        "bm25": 0.9933123765820888,
+        "vector": 0.8054042854067686,
+        "anchor": 0.7092161716171617,
+        "scope": 0.95,
+        "title": 0.25,
+        "signature": 0.42875,
+        "negative_penalty": -0.0,
+        "final_score": 0.8684035460081976
+      },
+      "crop_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\output\\financial_extraction_debug\\platform\\wafa_assurance_2025_annuel\\comptes_consolides\\BILAN_ACTIF\\crop.png",
+      "bbox": [
+        0.0,
+        569.28955078125,
+        595.2760009765625,
+        782.146484375
+      ],
+      "validation_result": "FAIL",
+      "validation_type": "human",
+      "validated_at": "2026-05-11T19:57:43",
+      "retrieval_latency_ms": 1028,
+      "source_job_id": "fc073cee-fc27-43d6-ad5a-38b8ad951df3"
+    },
+    {
+      "id": "wafa_assurance_2025_annuel_comptes_consolides_bilan_passif",
+      "pdf_name": "wafa_assurance_2025_annuel.pdf",
+      "pdf_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\Émetteur\\wafa_assurance_2025_annuel.pdf",
+      "company": "Wafa Assurance",
+      "year": 2025,
+      "report_type": "annuel",
+      "scope": "comptes_consolides",
+      "sector": "assurance",
+      "target_table": "BILAN_PASSIF",
+      "expected_page": null,
+      "predicted_page": 26,
+      "failure_reason": "WRONG_PAGE",
+      "top_k_pages": [
+        31,
+        26,
+        29,
+        20,
+        19,
+        22,
+        30,
+        66
+      ],
+      "retrieval_scores": {
+        "bm25": 0.6474645942231724,
+        "vector": 0.4310207390953367,
+        "anchor": 0.045088596491228074,
+        "scope": 1.0,
+        "title": 0.25,
+        "signature": 0.0,
+        "negative_penalty": -0.0,
+        "final_score": 0.10657398332843351
+      },
+      "crop_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\output\\financial_extraction_debug\\platform\\wafa_assurance_2025_annuel\\comptes_consolides\\BILAN_PASSIF\\crop.png",
+      "bbox": [
+        0.0,
+        592.3900146484375,
+        595.2760009765625,
+        821.8900146484375
+      ],
+      "validation_result": "FAIL",
+      "validation_type": "human",
+      "validated_at": "2026-05-11T19:57:47",
+      "retrieval_latency_ms": 1078,
+      "source_job_id": "8624bd70-debd-47e4-afee-effd031dc07f"
+    },
+    {
+      "id": "saham_bank_2025_annuel_comptes_sociaux_bilan_passif",
+      "pdf_name": "saham_bank_2025_annuel.pdf",
+      "pdf_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\Émetteur\\saham_bank_2025_annuel.pdf",
+      "company": "Saham Bank",
+      "year": 2025,
+      "report_type": "annuel",
+      "scope": "comptes_sociaux",
+      "sector": "bancaire_sdf",
+      "target_table": "BILAN_PASSIF",
+      "expected_page": null,
+      "predicted_page": 76,
+      "failure_reason": "WRONG_PAGE",
+      "top_k_pages": [
+        77,
+        76,
+        201,
+        88,
+        85,
+        81,
+        83,
+        46
+      ],
+      "retrieval_scores": {
+        "bm25": 1.0,
+        "vector": 0.9005250912634146,
+        "anchor": 1.0,
+        "scope": 1.0,
+        "title": 0.25,
+        "signature": 0.8375,
+        "negative_penalty": -0.09362499999999999,
+        "final_score": 1.0
+      },
+      "crop_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\output\\financial_extraction_debug\\platform\\saham_bank_2025_annuel\\comptes_sociaux\\BILAN_PASSIF\\crop.png",
+      "bbox": [
+        0.0,
+        475.92431640625,
+        595.2760009765625,
+        801.73583984375
+      ],
+      "validation_result": "FAIL",
+      "validation_type": "human",
+      "validated_at": "2026-05-11T20:01:15",
+      "retrieval_latency_ms": 1166,
+      "source_job_id": "c02aeed9-1adf-4767-944b-c7afac87c5c5"
+    },
+    {
+      "id": "cih_bank_2025_s1_comptes_consolides_bilan_passif",
+      "pdf_name": "cih_bank_2025_s1.pdf",
+      "pdf_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\Émetteur\\cih_bank_2025_s1.pdf",
+      "company": "CIH Bank",
+      "year": 2025,
+      "report_type": "s1",
+      "scope": "comptes_consolides",
+      "sector": "bancaire_sdf",
+      "target_table": "BILAN_PASSIF",
+      "expected_page": null,
+      "predicted_page": 11,
+      "failure_reason": "WRONG_PAGE",
+      "top_k_pages": [
+        10,
+        15,
+        11,
+        22,
+        4,
+        9,
+        17,
+        24
+      ],
+      "retrieval_scores": {
+        "bm25": 0.40439264242281653,
+        "vector": 0.9307486708566811,
+        "anchor": 0.10954326923076922,
+        "scope": 1.0,
+        "title": 0.9,
+        "signature": 0.24342948717948715,
+        "negative_penalty": -0.17097701149425287,
+        "final_score": 0.25171980884692147
+      },
+      "crop_path": "C:\\Users\\Pks\\Downloads\\RAG Avant OCR\\output\\financial_extraction_debug\\platform\\cih_bank_2025_s1\\comptes_consolides\\BILAN_PASSIF\\crop.png",
+      "bbox": [
+        0.0,
+        470.9904479980469,
+        708.6610107421875,
+        1000.469970703125
+      ],
+      "validation_result": "FAIL",
+      "validation_type": "human",
+      "validated_at": "2026-05-12T10:30:26",
+      "retrieval_latency_ms": 747,
+      "source_job_id": "619e360a-11e5-4110-bf94-3254306d73b9"
+    }
+  ]
+}

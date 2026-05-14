@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import shutil
+from time import perf_counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Set
 
 import fitz  # PyMuPDF
 
 from .document_classifier import detect_sector
-from .hybrid_retriever import retrieve_candidate_pages
+from .hybrid_retriever import filter_retrieved_pages_for_requested_scope, retrieve_candidate_pages
 from .keyword_dictionary import SCOPES, SECTORS, TARGET_TABLES
 from .models import PipelineConfig, TableCandidate
 from .page_indexer import build_page_chunks, build_page_index, load_or_build_page_index, load_page_chunks_cache
-from .page_renderer import render_pdf_pages
+from .page_renderer import render_pdf_page
 from .page_text_extractor import extract_page_texts
 from .pdf_loader import load_pdf
+from .rag_evidence import attach_and_write_rag_evidence, write_summary_rag_evidence
 from .table_cropper import crop_table_image
 from .table_localizer import localize_table_candidates
 from .table_validator import validate_extracted_table
@@ -43,23 +45,24 @@ def extract_financial_table(
         if debug_dir_override is not None
         else cfg.output_dir / slugify(company) / str(year) / pdf.pdf_id / f"{scope}_{target_table}"
     )
-    rendered_dir = ensure_dir(debug_dir / "rendered_pages")
+    rendered_dir = debug_dir / "rendered_pages"
     crop_dir = ensure_dir(debug_dir / "crops")
 
     page_texts = extract_page_texts(pdf.pdf_path)
     detected_sector = detect_sector(page_texts, sector)
-    image_paths = render_pdf_pages(pdf.pdf_path, rendered_dir, dpi=cfg.dpi)
     pages = build_page_chunks(
         pdf_id=pdf.pdf_id,
         company=company,
         year=year,
         sector=detected_sector,
         page_texts=page_texts,
-        image_paths=image_paths,
+        image_paths={},
     )
     index = build_page_index(pages, cfg, debug_dir=debug_dir)
 
+    retrieval_started = perf_counter()
     retrieved = retrieve_candidate_pages(index, target_table, scope, detected_sector, cfg)
+    retrieval_latency_ms = int((perf_counter() - retrieval_started) * 1000)
     retrieval_payload = [r.to_dict() for r in retrieved]
     write_json(debug_dir / "retrieval_candidates.json", retrieval_payload)
     write_json(debug_dir / "score_breakdown.json", retrieval_payload)
@@ -94,7 +97,15 @@ def extract_financial_table(
     )
 
     page_size = _page_size(pdf.pdf_path, selected.page_number)
-    crop_path = crop_table_image(selected, image_paths[selected.page_number], crop_dir, page_size)
+    image_paths: dict[int, str] = {}
+    selected_image_path = _ensure_rendered_page_image(
+        pdf.pdf_path,
+        rendered_dir=rendered_dir,
+        image_paths=image_paths,
+        page_number=selected.page_number,
+        dpi=cfg.dpi,
+    )
+    crop_path = crop_table_image(selected, selected_image_path, crop_dir, page_size)
     stable_crop_path = str(debug_dir / "crop.png")
     shutil.copy2(crop_path, stable_crop_path)
     write_json(
@@ -161,7 +172,14 @@ def extract_financial_table(
             "candidate_confidence": selected.confidence,
             "candidate_evidence": selected.evidence,
         },
+        "benchmark_retrieval": _benchmark_retrieval_payload(
+            retrieved=retrieved,
+            selected_retrieved=selected_retrieved,
+            selected_page=selected.page_number,
+            retrieval_latency_ms=retrieval_latency_ms,
+        ),
     }
+    attach_and_write_rag_evidence(output, debug_dir, page_text=page_texts.get(selected.page_number, ""))
     output["rendered_pages_deleted"] = _cleanup_rendered_pages(rendered_dir, enabled=cfg.cleanup_rendered_pages)
     write_json(debug_dir / "final_extracted.json", output)
     return output
@@ -182,6 +200,7 @@ def extract_financial_tables(
     model: str | None = None,
     force_vision: bool | None = None,
     force_page: bool | None = None,
+    force_recrop: bool | None = None,
 ) -> dict[str, Any]:
     data = dict(payload or {})
     pdf_path = pdf_path or data.get("pdf_path")
@@ -193,6 +212,13 @@ def extract_financial_tables(
     provider = (provider or data.get("provider") or "groq").lower().strip()
     force_vision = bool(force_vision if force_vision is not None else data.get("force_vision") or data.get("forceVision"))
     force_page = bool(force_page if force_page is not None else data.get("force_page") or data.get("forcePage") or data.get("rerun_page") or data.get("rerunPage"))
+    force_recrop = bool(
+        force_recrop
+        if force_recrop is not None
+        else data.get("force_recrop") or data.get("forceRecrop") or data.get("rerun_crop") or data.get("rerunCrop")
+    )
+    if force_page:
+        force_recrop = False
     target_tables = list(target_tables or data.get("target_tables") or [])
     if not target_tables:
         raise ValueError("target_tables is required")
@@ -210,7 +236,7 @@ def extract_financial_tables(
     pdf = load_pdf(str(pdf_path))
     page_chunks_path = base_output / "page_chunks.json"
     rendered_dir = base_output / "_rendered_pages"
-    if not force_vision and not force_page:
+    if not force_vision and not force_page and not force_recrop:
         cached_summary = _load_complete_cached_summary(
             base_output=base_output,
             pdf_path=pdf.pdf_path,
@@ -226,6 +252,7 @@ def extract_financial_tables(
             rendered_dir=rendered_dir,
         )
         if cached_summary is not None:
+            write_summary_rag_evidence(cached_summary, base_output)
             write_json(base_output / "summary.json", cached_summary)
             return cached_summary
 
@@ -241,29 +268,21 @@ def extract_financial_tables(
     cache_used = pages is not None
     rendered_pages_skipped = False
     if pages is not None:
-        image_paths = {page.page_number: page.image_path for page in pages if page.image_path}
-        rendered_pages_skipped = bool(image_paths) and all(Path(path).is_file() for path in image_paths.values())
-        if not rendered_pages_skipped:
-            rendered_dir = ensure_dir(rendered_dir)
-            image_paths = render_pdf_pages(pdf.pdf_path, rendered_dir, dpi=cfg.dpi)
-            for page in pages:
-                if page.page_number in image_paths:
-                    page.image_path = image_paths[page.page_number]
-            write_json(page_chunks_path, [p.to_dict() for p in pages])
+        image_paths = {page.page_number: page.image_path for page in pages if page.image_path and Path(page.image_path).is_file()}
+        rendered_pages_skipped = True
     else:
         image_paths = {}
     if pages is None:
-        rendered_dir = ensure_dir(rendered_dir)
-        image_paths = render_pdf_pages(pdf.pdf_path, rendered_dir, dpi=cfg.dpi)
         pages = build_page_chunks(
             pdf_id=pdf.pdf_id,
             company=str(company),
             year=int(year),
             sector=detected_sector,
             page_texts=page_texts,
-            image_paths=image_paths,
+            image_paths={},
         )
         write_json(page_chunks_path, [p.to_dict() for p in pages])
+        rendered_pages_skipped = True
     index, index_cache_used = load_or_build_page_index(pages, cfg, base_output)
 
     results: list[dict[str, Any]] = []
@@ -287,6 +306,7 @@ def extract_financial_tables(
                 index=index,
                 force_vision=force_vision,
                 force_page=force_page,
+                force_recrop=force_recrop,
             )
         except Exception as exc:
             result = {
@@ -323,6 +343,7 @@ def extract_financial_tables(
         "provider": provider,
         "force_vision": force_vision,
         "force_page": force_page,
+        "force_recrop": force_recrop,
         "page_chunks_cache_used": cache_used,
         "index_cache_used": index_cache_used,
         "page_chunks_path": str(page_chunks_path),
@@ -334,12 +355,54 @@ def extract_financial_tables(
         "rendered_pages_deleted": False,
         "results": results,
     }
+    write_summary_rag_evidence(summary, base_output)
     summary["rendered_pages_deleted"] = _cleanup_rendered_pages(
         rendered_dir,
-        enabled=cfg.cleanup_rendered_pages and not force_page and _should_cleanup_rendered_pages_after_run(base_output),
+        enabled=cfg.cleanup_rendered_pages
+        and not force_page
+        and not force_recrop
+        and _should_cleanup_rendered_pages_after_run(base_output),
     )
     write_json(base_output / "summary.json", summary)
     return summary
+
+
+def _read_previous_selected_page(debug_dir: Path) -> int | None:
+    """Last localized page from a prior run (used when ``force_page`` asks for a different page)."""
+    payload = _read_json(debug_dir / "selected_page.json")
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("page_number")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_selected_retrieval(debug_dir: Path) -> dict[str, Any] | None:
+    payload = _read_json(debug_dir / "selected_page.json")
+    if not isinstance(payload, dict):
+        return None
+    retrieval = payload.get("retrieval")
+    return retrieval if isinstance(retrieval, dict) else None
+
+
+def _read_cached_retrieval_latency(debug_dir: Path) -> int | None:
+    final_payload = _read_json(debug_dir / "final_extracted.json")
+    if not isinstance(final_payload, dict):
+        return None
+    benchmark = final_payload.get("benchmark_retrieval")
+    if not isinstance(benchmark, dict):
+        return None
+    latency = benchmark.get("retrieval_latency_ms")
+    if latency is None:
+        return None
+    try:
+        return int(latency)
+    except (TypeError, ValueError):
+        return None
 
 
 def _extract_prepared_financial_table(
@@ -359,12 +422,28 @@ def _extract_prepared_financial_table(
     index,
     force_vision: bool = False,
     force_page: bool = False,
+    force_recrop: bool = False,
 ) -> dict[str, Any]:
+    """Run vision extraction for one table under ``debug_dir``.
+
+    Semantics (UI):
+
+    - ``force_page=True``: new **page** — full retrieval + scoring + localization, but the
+      **previous** selected page is excluded so another page can win; then new crop + LLM.
+
+    - ``force_recrop=True`` (and ``force_page=False``): same **page** as retrieval would
+      normally pick (no exclusion) — invalidate the cached crop, re-run localization +
+      ``crop.png``, then LLM. Use when the page is right but the crop is wrong.
+
+    - ``force_vision=True`` (no page/recrop flags): keep ``crop.png``; LLM only.
+
+    If ``force_page`` is true, ``force_recrop`` is ignored (caller should clear it).
+    """
     target_table = _validate_choice("target_table", target_table, TARGET_TABLES)
     scope = _validate_choice("scope", scope, SCOPES)
     sector = _validate_choice("sector", sector, SECTORS)
 
-    if not force_vision and not force_page:
+    if not force_vision and not force_page and not force_recrop:
         cached_result = _load_valid_vision_result(
             debug_dir,
             provider=cfg.vision_provider,
@@ -383,26 +462,83 @@ def _extract_prepared_financial_table(
                     "llm_call_skipped": True,
                     "force_vision": False,
                     "force_page": False,
+                    "force_recrop": False,
                     "requested_provider": cfg.vision_provider,
                     "requested_model": cfg.vision_model,
                 }
             )
+            selected_page = _optional_int(cached_result.get("selected_page"))
+            attach_and_write_rag_evidence(
+                cached_result,
+                debug_dir,
+                page_text=page_texts.get(selected_page, "") if selected_page else "",
+            )
             return cached_result
 
-    crop_cache = None if force_page else _load_crop_cache(debug_dir, target_table=target_table, scope=scope, sector=sector)
+    crop_cache = None if (force_page or force_recrop) else _load_crop_cache(
+        debug_dir, target_table=target_table, scope=scope, sector=sector
+    )
+    if force_vision and not force_page and not force_recrop and crop_cache is None:
+        msg = (
+            "Réextraction LLM seule impossible: crop.png ou métadonnées (crop_metadata) "
+            "absents ou invalides. Lancez une extraction complète ou utilisez "
+            "« Nouvelle page » ou « Nouveau crop » pour recalculer le crop."
+        )
+        result = _empty_result(pdf_path, company, year, target_table, scope, sector)
+        result["warnings"] = ["force_vision_requires_existing_crop"]
+        result["error"] = msg
+        result["validation"] = {
+            "status": "rejected",
+            "issues": ["force_vision_no_crop"],
+            "warnings": [msg],
+        }
+        result["debug"] = {"dir": str(debug_dir), "pdf_id": pdf_id}
+        result["cache"] = {
+            "crop_cache_used": False,
+            "vision_result_cache_used": False,
+            "force_vision": True,
+            "force_page": False,
+            "force_recrop": False,
+            "llm_call_skipped": True,
+        }
+        write_json(debug_dir / "final_extracted.json", result)
+        write_json(debug_dir / "extracted_table.json", result)
+        write_json(debug_dir / "validation_report.json", result["validation"])
+        return result
+
     if crop_cache is not None:
         selected = crop_cache["candidate"]
         stable_crop_path = crop_cache["crop_path"]
-        selected_retrieved = None
+        selected_retrieved = _read_selected_retrieval(debug_dir)
         crop_cache_used = True
+        retrieval_payload = _read_json(debug_dir / "retrieval_candidates.json")
+        retrieval_latency_ms = _read_cached_retrieval_latency(debug_dir)
     else:
         selected = None
         stable_crop_path = ""
         selected_retrieved = None
         crop_cache_used = False
+        retrieval_payload = []
+        retrieval_latency_ms = None
 
     if selected is None:
-        retrieved = retrieve_candidate_pages(index, target_table, scope, sector, cfg)
+        exclude_pages: Set[int] = set()
+        if force_page:
+            prev_page = _read_previous_selected_page(debug_dir)
+            if prev_page is not None:
+                exclude_pages.add(prev_page)
+        retrieval_started = perf_counter()
+        retrieved = retrieve_candidate_pages(
+            index,
+            target_table,
+            scope,
+            sector,
+            cfg,
+            exclude_page_numbers=exclude_pages if exclude_pages else None,
+        )
+        if exclude_pages:
+            retrieved = filter_retrieved_pages_for_requested_scope(retrieved, scope)
+        retrieval_latency_ms = int((perf_counter() - retrieval_started) * 1000)
         retrieval_payload = [r.to_dict() for r in retrieved]
         write_json(debug_dir / "retrieval_candidates.json", retrieval_payload)
         write_json(debug_dir / "score_breakdown.json", retrieval_payload)
@@ -437,13 +573,27 @@ def _extract_prepared_financial_table(
         )
 
         page_size = _page_size(pdf_path, selected.page_number)
-        generated_crop = crop_table_image(selected, image_paths[selected.page_number], debug_dir / "crops", page_size)
+        selected_image_path = _ensure_rendered_page_image(
+            pdf_path,
+            rendered_dir=cfg.output_dir / "_rendered_pages",
+            image_paths=image_paths,
+            page_number=selected.page_number,
+            dpi=cfg.dpi,
+        )
+        generated_crop = crop_table_image(selected, selected_image_path, debug_dir / "crops", page_size)
         stable_crop_path = str(debug_dir / "crop.png")
         continuation = _find_cpc_continuation_candidate(selected, candidates, page_texts)
-        if continuation is not None and continuation.page_number in image_paths:
+        if continuation is not None:
+            continuation_image_path = _ensure_rendered_page_image(
+                pdf_path,
+                rendered_dir=cfg.output_dir / "_rendered_pages",
+                image_paths=image_paths,
+                page_number=continuation.page_number,
+                dpi=cfg.dpi,
+            )
             continuation_crop = crop_table_image(
                 continuation,
-                image_paths[continuation.page_number],
+                continuation_image_path,
                 debug_dir / "crops",
                 _page_size(pdf_path, continuation.page_number),
             )
@@ -453,8 +603,23 @@ def _extract_prepared_financial_table(
             shutil.copy2(generated_crop, stable_crop_path)
         _write_crop_metadata(debug_dir, stable_crop_path, selected, bool(cfg.use_vision), crop_cache_used=False)
 
-    if force_vision or force_page:
-        _backup_previous_vision_artifacts(debug_dir, provider=cfg.vision_provider, model=cfg.vision_model)
+    if force_vision or force_page or force_recrop:
+        if force_page and force_vision:
+            _reason = "force_page_and_vision"
+        elif force_page:
+            _reason = "force_page"
+        elif force_recrop and force_vision:
+            _reason = "force_recrop_and_vision"
+        elif force_recrop:
+            _reason = "force_recrop"
+        else:
+            _reason = "force_vision"
+        _backup_previous_vision_artifacts(
+            debug_dir,
+            provider=cfg.vision_provider,
+            model=cfg.vision_model,
+            reason=_reason,
+        )
 
     extracted = extract_table_with_vision(
         stable_crop_path,
@@ -497,6 +662,12 @@ def _extract_prepared_financial_table(
             "candidate_evidence": selected.evidence,
             "pdf_id": pdf_id,
         },
+        "benchmark_retrieval": _benchmark_retrieval_payload(
+            retrieved=retrieval_payload,
+            selected_retrieved=selected_retrieved,
+            selected_page=selected.page_number,
+            retrieval_latency_ms=retrieval_latency_ms,
+        ),
         "cache": {
             "crop_cache_used": crop_cache_used,
             "vision_result_cache_used": False,
@@ -504,9 +675,11 @@ def _extract_prepared_financial_table(
             "model": cfg.vision_model,
             "force_vision": force_vision,
             "force_page": force_page,
+            "force_recrop": force_recrop,
             "llm_call_skipped": False,
         },
     }
+    attach_and_write_rag_evidence(output, debug_dir, page_text=page_texts.get(selected.page_number, ""))
     write_json(debug_dir / "final_extracted.json", output)
     return output
 
@@ -639,6 +812,19 @@ def _load_completed_extraction_artifacts(
     if not Path(crop_path).is_file():
         crop_path = str(debug_dir / "crop.png")
     final_payload["crop_path"] = crop_path
+    evidence_payload = _read_json(debug_dir / "rag_evidence_chunks.json")
+    if isinstance(evidence_payload, list):
+        final_payload["rag_evidence_chunks"] = evidence_payload
+        final_payload["rag_evidence_path"] = str(debug_dir / "rag_evidence_chunks.json")
+    final_payload.setdefault(
+        "benchmark_retrieval",
+        _benchmark_retrieval_payload(
+            retrieved=_read_json(debug_dir / "retrieval_candidates.json") or [],
+            selected_retrieved=_read_selected_retrieval(debug_dir),
+            selected_page=final_payload.get("selected_page"),
+            retrieval_latency_ms=_read_cached_retrieval_latency(debug_dir),
+        ),
+    )
     return final_payload
 
 
@@ -1056,7 +1242,118 @@ def _write_crop_metadata(
     write_json(debug_dir / "selected_crop_validation.json", payload)
 
 
-def _backup_previous_vision_artifacts(debug_dir: Path, *, provider: str, model: str | None) -> None:
+def _benchmark_retrieval_payload(
+    *,
+    retrieved: list[Any] | Any,
+    selected_retrieved: Any,
+    selected_page: Any = None,
+    retrieval_latency_ms: int | None,
+) -> dict[str, Any]:
+    retrieved_items = retrieved if isinstance(retrieved, list) else []
+    selected_payload = _retrieved_page_payload(selected_retrieved)
+    predicted_page = _retrieved_page_number(selected_payload)
+    if predicted_page is None:
+        try:
+            predicted_page = int(selected_page)
+        except (TypeError, ValueError):
+            predicted_page = None
+    if selected_payload is None and predicted_page is not None:
+        selected_payload = next(
+            (
+                payload
+                for item in retrieved_items
+                if (payload := _retrieved_page_payload(item)) is not None
+                and _retrieved_page_number(payload) == predicted_page
+            ),
+            None,
+        )
+    return {
+        "predicted_page": predicted_page,
+        "top_k_pages": [
+            page_number
+            for item in retrieved_items
+            if (page_number := _retrieved_page_number(_retrieved_page_payload(item))) is not None
+        ],
+        "retrieval_scores": _retrieval_score_breakdown(selected_payload),
+        "retrieval_latency_ms": retrieval_latency_ms,
+    }
+
+
+def _retrieved_page_payload(item: Any) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    if isinstance(item, dict):
+        return item
+    to_dict = getattr(item, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _retrieved_page_number(payload: dict[str, Any] | None) -> int | None:
+    if not payload:
+        return None
+    raw = payload.get("page_number")
+    if raw is None and isinstance(payload.get("page"), dict):
+        raw = payload["page"].get("page_number")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _retrieval_score_breakdown(payload: dict[str, Any] | None) -> dict[str, float | None]:
+    if not payload:
+        return {
+            "bm25": None,
+            "vector": None,
+            "anchor": None,
+            "scope": None,
+            "title": None,
+            "signature": None,
+            "negative_penalty": None,
+            "final_score": None,
+        }
+
+    opposite_signature = _optional_float(payload.get("opposite_scope_signature_score"))
+    return {
+        "bm25": _optional_float(payload.get("bm25_score")),
+        "vector": _optional_float(payload.get("vector_score")),
+        "anchor": _optional_float(payload.get("target_anchor_score")),
+        "scope": _optional_float(payload.get("scope_score")),
+        "title": _optional_float(payload.get("title_score")),
+        "signature": _optional_float(payload.get("scope_signature_score")),
+        "negative_penalty": -opposite_signature if opposite_signature is not None else None,
+        "final_score": _optional_float(payload.get("final_score") if "final_score" in payload else payload.get("score")),
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _backup_previous_vision_artifacts(
+    debug_dir: Path,
+    *,
+    provider: str,
+    model: str | None,
+    reason: str = "force_vision",
+) -> None:
     artifact_names = [
         "final_extracted.json",
         "extracted_table.json",
@@ -1075,7 +1372,7 @@ def _backup_previous_vision_artifacts(debug_dir: Path, *, provider: str, model: 
     write_json(
         history_dir / "rerun_metadata.json",
         {
-            "reason": "force_vision_rerun",
+            "reason": reason,
             "new_provider": provider,
             "new_model": model,
             "original_debug_dir": str(debug_dir),
@@ -1189,6 +1486,22 @@ def _page_size(pdf_path: str, page_number: int) -> tuple[float, float]:
         return float(rect.width), float(rect.height)
     finally:
         doc.close()
+
+
+def _ensure_rendered_page_image(
+    pdf_path: str,
+    *,
+    rendered_dir: Path,
+    image_paths: dict[int, str],
+    page_number: int,
+    dpi: int,
+) -> str:
+    existing = image_paths.get(page_number)
+    if existing and Path(existing).is_file():
+        return existing
+    rendered = render_pdf_page(pdf_path, rendered_dir, page_number, dpi=dpi)
+    image_paths[page_number] = rendered
+    return rendered
 
 
 def _empty_result(pdf_path: str, company: str, year: int, target_table: str, scope: str, sector: str) -> dict[str, Any]:

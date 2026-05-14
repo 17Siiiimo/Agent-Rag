@@ -1,5 +1,5 @@
 """
-API REST FastAPI pour le pipeline RAG Phase 1.
+API REST FastAPI — plateforme d'extraction financière (PDF AMMC → RAG page-aware + Vision).
 Frontend (Vite) appelle VITE_API_URL (ex: http://localhost:8000).
 
 Lancer : uvicorn api:app --reload --port 8000
@@ -26,12 +26,16 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 import requests
 
-from rag_agent.pipeline_phase1 import Phase1Pipeline
 from rag_agent.scraper import DEFAULT_PDF_DIR as PDF_DIR, normalize_user_emetteur
 from rag_agent.financial_extraction import extract_financial_tables
+from rag_agent.financial_extraction.benchmark import (
+    FAILURE_REASONS,
+    build_financial_benchmark_entry,
+    save_financial_benchmark_entry,
+)
 
 app = FastAPI(
-    title="RAG Phase 1 API",
+    title="Financial extraction API",
     description="Extraction de tableaux financiers (BILAN ACTIF, BILAN PASSIF, COMPTE DE PRODUITS ET CHARGES) depuis PDFs RFA AMMC",
     version="1.0",
 )
@@ -88,15 +92,7 @@ KNOWN_EMETTEURS = [
 _jobs: dict[str, dict[str, Any]] = {}
 _executor = ThreadPoolExecutor(max_workers=2)
 
-_pipeline: Optional[Phase1Pipeline] = None
 _emetteur_sector_map_cache: dict[str, str] | None = None
-
-
-def get_pipeline() -> Phase1Pipeline:
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = Phase1Pipeline(pdf_dir=PDF_DIR, xlsx_dir=XLSX_DIR)
-    return _pipeline
 
 
 def _sector_map_key(value: str) -> str:
@@ -326,13 +322,28 @@ class ExtraireBody(BaseModel):
     )
     force_vision: bool = Field(
         False,
-        description="Force une nouvelle extraction Vision meme si un resultat LLM valide existe deja",
+        description=(
+            "Relance uniquement le LLM vision en conservant crop.png et le candidat actuel "
+            "(changement de modèle / fournisseur). Sans crop valide, l'API renvoie une erreur: "
+            "faire une extraction complète ou utiliser « nouveau crop » / « nouvelle page »."
+        ),
         validation_alias=AliasChoices("force_vision", "forceVision", "rerun_vision", "rerunVision"),
     )
     force_page: bool = Field(
         False,
-        description="Force une nouvelle selection de page/crop RAG avant l'extraction Vision",
+        description=(
+            "Nouvelle page : refait recherche + scores + localisation, exclut la page précédente du classement, "
+            "régénère crop.png puis LLM. Si le tableau n'est pas sur la bonne page."
+        ),
         validation_alias=AliasChoices("force_page", "forcePage", "rerun_page", "rerunPage"),
+    )
+    force_recrop: bool = Field(
+        False,
+        description=(
+            "Nouveau crop : invalide le crop en cache, relance recherche + localisation **sans** exclure la page "
+            "déjà trouvée (même page si elle reste en tête), régénère crop.png puis LLM. Si la page est bonne mais le crop est mauvais."
+        ),
+        validation_alias=AliasChoices("force_recrop", "forceRecrop", "rerun_crop", "rerunCrop"),
     )
 
     @field_validator("emetteur", mode="before")
@@ -351,9 +362,41 @@ class ExtraireBody(BaseModel):
 # ─── Routes ─────────────────────────────────────────────────────────────────
 
 
+class BenchmarkFeedbackBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_id: str = Field(..., validation_alias=AliasChoices("job_id", "jobId"))
+    verdict: str = Field(..., description="pass or fail")
+    failure_reason: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("failure_reason", "failureReason", "reason"),
+    )
+    notes: Optional[str] = None
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _normalize_verdict(cls, v: Any) -> str:
+        text = str(v or "").strip().lower()
+        if text in {"pass", "passed", "ok", "valid", "correct"}:
+            return "pass"
+        if text in {"fail", "failed", "ko", "wrong", "incorrect"}:
+            return "fail"
+        raise ValueError("verdict must be pass or fail")
+
+    @field_validator("failure_reason", mode="before")
+    @classmethod
+    def _normalize_failure_reason(cls, v: Any) -> str | None:
+        if v is None or str(v).strip() == "":
+            return None
+        text = str(v).strip().upper()
+        if text not in FAILURE_REASONS:
+            raise ValueError(f"failure_reason must be one of: {', '.join(sorted(FAILURE_REASONS))}")
+        return text
+
+
 @app.get("/")
 def root():
-    return {"message": "RAG Phase 1 API", "docs": "/docs", "api": "/api/emetteurs"}
+    return {"message": "Financial extraction API", "docs": "/docs", "api": "/api/emetteurs"}
 
 
 def _normalize_approach(value: Any) -> str:
@@ -452,7 +495,7 @@ def api_ensure_pdf(
     Type de rapport : passer `type_rapport` **ou** `typeRapport` (camelCase, ex. Rapports 1er semestre).
     Le paramètre `emetteur` accepte aussi les saisies type « ÉmetteurADDOHA » (normalisé en addoha).
     Fichier cible : `{slug}_{année}_{annuel|s1}.pdf` (dossier « Émetteur » du projet ou équivalent).
-    Après extraction Phase 1, l’index RAG est sous `data/index/{slug}/{année}/s1|annuel/index/`.
+    L’index page-aware et les artefacts d’extraction sont sous `output/financial_extraction_debug/platform/`.
     """
     em_raw = (emetteur.strip() if emetteur else "") or _query_str_first(
         request, ("code", "Emetteur", "émetteur")
@@ -538,91 +581,6 @@ def api_emetteurs():
         )
 
 
-def _run_pipeline_job(
-    job_id: str,
-    emetteur: str,
-    year: int,
-    tableau: str,
-    type_comptes: str,
-    type_rapport: str,
-    search_mode: str,
-    api_provider: str,
-) -> None:
-    """Exécute le pipeline et met à jour _jobs[job_id]."""
-    tc = (type_comptes or "sociaux").strip().lower()
-    if tc not in ("sociaux", "consolides"):
-        tc = "consolides" if "consolid" in tc else "sociaux"
-    tr = _normalize_type_rapport(type_rapport)
-    sm = _normalize_search_mode(search_mode)
-    provider = _normalize_api_provider(api_provider)
-    logger.info(
-        "_run_pipeline_job: emetteur=%r year=%r tableau=%r type_comptes=%r type_rapport=%r api_provider=%r",
-        emetteur,
-        year,
-        tableau,
-        tc,
-        tr,
-        provider,
-    )
-    pipeline = get_pipeline()
-    try:
-        result = pipeline.run(
-            emetteur=emetteur.strip(),
-            year=year,
-            tableau=tableau.strip(),
-            type_comptes=tc,
-            type_rapport=tr,
-            search_mode=sm,
-            api_provider=provider,
-        )
-        if not result.success:
-            _jobs[job_id] = {
-                "status": "error",
-                "error": result.error or "Erreur lors de l'extraction",
-                "page_num": result.page_num,
-                "method": result.method,
-                "confidence": result.confidence,
-                "fallback_used": getattr(result, "fallback_used", False),
-                "extraction_warnings": getattr(result, "extraction_warnings", []) or [],
-                "extraction_strategy_used": getattr(result, "extraction_strategy_used", result.method),
-                "completeness_score": getattr(result, "completeness_score", 0.0),
-                "missing_anchors": getattr(result, "missing_anchors", []) or [],
-                "type_rapport_used": tr,
-                "api_provider": provider,
-            }
-            return
-        df = result.df
-        columns = list(df.columns)
-        data = df.fillna("").astype(str).values.tolist()
-        excel_path = str(result.excel_path) if result.excel_path else None
-        _jobs[job_id] = {
-            "status": "success",
-            "headers": columns,
-            "rows": data,
-            "method": result.method,
-            "confidence": result.confidence,
-            "page_num": result.page_num,
-            "excel_path": excel_path,
-            "pdf_from_cache": getattr(result, "pdf_from_cache", False),
-            "fallback_used": getattr(result, "fallback_used", False),
-            "extraction_warnings": getattr(result, "extraction_warnings", []) or [],
-            # ── Nouveaux champs observabilité 2025 ──────────────────────────
-            "extraction_strategy_used": getattr(result, "extraction_strategy_used", result.method),
-            "completeness_score": getattr(result, "completeness_score", 0.0),
-            "missing_anchors": getattr(result, "missing_anchors", []) or [],
-            "type_rapport_used": tr,
-            "api_provider": provider,
-        }
-    except Exception as e:
-        logger.exception("_run_pipeline_job exception: %s", e)
-        _jobs[job_id] = {
-            "status": "error",
-            "error": str(e),
-            "type_rapport_used": tr,
-            "api_provider": provider,
-        }
-
-
 def _run_financial_vision_job(
     job_id: str,
     emetteur: str,
@@ -634,6 +592,7 @@ def _run_financial_vision_job(
     api_provider: str,
     force_vision: bool = False,
     force_page: bool = False,
+    force_recrop: bool = False,
 ) -> None:
     """Runs the new page-aware crop + Vision extraction pipeline for /api/extraire."""
     tc = (type_comptes or "sociaux").strip().lower()
@@ -648,7 +607,7 @@ def _run_financial_vision_job(
     company = _display_company_name(normalized_emetteur)
     sector = _infer_financial_sector(normalized_emetteur)
     logger.info(
-        "_run_financial_vision_job: emetteur=%r year=%r target_table=%r scope=%r type_rapport=%r sector=%r provider=%r force_vision=%r force_page=%r",
+        "_run_financial_vision_job: emetteur=%r year=%r target_table=%r scope=%r type_rapport=%r sector=%r provider=%r force_vision=%r force_page=%r force_recrop=%r",
         normalized_emetteur,
         year,
         target_table,
@@ -658,6 +617,7 @@ def _run_financial_vision_job(
         provider,
         force_vision,
         force_page,
+        force_recrop,
     )
     try:
         _jobs[job_id] = {
@@ -700,10 +660,12 @@ def _run_financial_vision_job(
                 "provider": provider,
                 "force_vision": force_vision,
                 "force_page": force_page,
+                "force_recrop": force_recrop,
             },
             output_dir=output_dir,
             force_vision=force_vision,
             force_page=force_page,
+            force_recrop=force_recrop,
         )
         result = (summary.get("results") or [{}])[0]
         headers, rows = _financial_result_to_table(result)
@@ -728,7 +690,18 @@ def _run_financial_vision_job(
             "api_provider": provider,
             "approach": APPROACH_A,
             "approach_label": APPROACHES[APPROACH_A]["label"],
+            "job_id": job_id,
+            "pdf_path": str(pdf_path),
+            "company": company,
+            "year": year,
+            "emetteur": normalized_emetteur,
+            "type_rapport_used": tr,
             "crop_path": result.get("crop_path", ""),
+            "bbox": result.get("bbox", []),
+            "predicted_page": (result.get("benchmark_retrieval") or {}).get("predicted_page") or result.get("selected_page"),
+            "top_k_pages": (result.get("benchmark_retrieval") or {}).get("top_k_pages", []),
+            "retrieval_scores": (result.get("benchmark_retrieval") or {}).get("retrieval_scores", {}),
+            "retrieval_latency_ms": (result.get("benchmark_retrieval") or {}).get("retrieval_latency_ms"),
             "vision_output_dir": (result.get("debug") or {}).get("dir", str(output_dir)),
             "validation": validation,
             "target_found": bool(result.get("target_found")),
@@ -737,6 +710,7 @@ def _run_financial_vision_job(
             "target_table": target_table,
             "force_vision": force_vision,
             "force_page": force_page,
+            "force_recrop": force_recrop,
             "error": _friendly_extraction_error(
                 result_error,
                 target_table=target_table,
@@ -755,6 +729,7 @@ def _run_financial_vision_job(
             "approach_label": APPROACHES[APPROACH_A]["label"],
             "force_vision": force_vision,
             "force_page": force_page,
+            "force_recrop": force_recrop,
         }
 
 
@@ -1030,7 +1005,7 @@ def _extract_type_rapport_from_raw(raw: dict) -> Optional[str]:
 async def api_extraire(request: Request):
     """
     Lance l'extraction en arrière-plan. Retourne { job_id }.
-    Télécharge le PDF si absent, indexe dans `data/index/{emetteur}/{annee}/s1|annuel/index/` si nécessaire.
+    Télécharge le PDF si absent, puis exécute le pipeline page-aware + Vision (cache sous `output/financial_extraction_debug/`).
     Le champ `emetteur` est normalisé (ex. « ÉmetteurADDOHA » → addoha).
     """
     # Lire le corps JSON brut AVANT le parsing Pydantic
@@ -1081,6 +1056,7 @@ async def api_extraire(request: Request):
     api_provider = _normalize_api_provider(body.api_provider or "groq")
     force_vision = bool(body.force_vision)
     force_page = bool(body.force_page)
+    force_recrop = bool(body.force_recrop) and not force_page
     approach = _normalize_approach(body.approach)
     if approach == APPROACH_A:
         _executor.submit(
@@ -1095,6 +1071,7 @@ async def api_extraire(request: Request):
             api_provider,
             force_vision,
             force_page,
+            force_recrop,
         )
     else:
         _executor.submit(_run_external_approach_job, job_id, approach, raw)
@@ -1106,6 +1083,7 @@ async def api_extraire(request: Request):
         "approach_label": APPROACHES[approach]["label"],
         "force_vision": force_vision,
         "force_page": force_page,
+        "force_recrop": force_recrop,
     }
 
 
@@ -1124,6 +1102,64 @@ async def api_financial_extraction_vision(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
+
+
+@app.post("/api/benchmark/feedback", response_class=JSONResponse)
+async def api_benchmark_feedback(request: Request):
+    try:
+        raw = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Corps JSON invalide : {exc}")
+    try:
+        body = BenchmarkFeedbackBody.model_validate(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if body.job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Job introuvable")
+    job = _jobs[body.job_id]
+    if not job.get("target_table") or not job.get("scope") or not job.get("sector"):
+        raise HTTPException(status_code=400, detail="Job incompatible avec le benchmark financier")
+
+    feedback = build_financial_benchmark_entry(
+        source_job_id=body.job_id,
+        job=job,
+        validation_result="PASS" if body.verdict == "pass" else "FAIL",
+        failure_reason=body.failure_reason,
+    )
+    if body.verdict == "pass":
+        saved_path = _save_benchmark_case(feedback)
+        message = "Case added to benchmark"
+    else:
+        saved_path = _save_benchmark_failure(feedback)
+        message = "Failure saved for review"
+
+    job["benchmark_feedback"] = {
+        "verdict": body.verdict,
+        "failure_reason": body.failure_reason or "",
+        "path": str(saved_path),
+        "notes": body.notes or "",
+    }
+    return JSONResponse(
+        content={
+            "success": True,
+            "message": message,
+            "verdict": body.verdict,
+            "path": str(saved_path),
+            "case": feedback,
+        },
+        media_type="application/json; charset=utf-8",
+    )
+
+
+def _save_benchmark_case(case: dict[str, Any]) -> Path:
+    path = _API_ROOT / "data" / "financial_benchmark_cases.json"
+    return save_financial_benchmark_entry(path, "cases", case)
+
+
+def _save_benchmark_failure(case: dict[str, Any]) -> Path:
+    path = _API_ROOT / "data" / "financial_benchmark_failures.json"
+    return save_financial_benchmark_entry(path, "failures", case)
 
 
 @app.get("/api/status/{job_id}", response_class=JSONResponse)

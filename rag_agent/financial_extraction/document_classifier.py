@@ -91,8 +91,20 @@ def detect_titles(page_text: str) -> list[str]:
     titles: list[str] = []
     normalized = "\n" + normalize_text(page_text) + "\n"
     strong_patterns = {
-        "BILAN_ACTIF": ["\nbilan actif\n", "\nactif\n", "bilan (actif)", "bilan actif"],
-        "BILAN_PASSIF": ["\nbilan passif\n", "\npassif\n", "bilan (passif)", "bilan passif"],
+        "BILAN_ACTIF": [
+            "\nbilan actif\n",
+            "\nactif\n",
+            "bilan (actif)",
+            "bilan actif",
+            "bilan social",
+        ],
+        "BILAN_PASSIF": [
+            "\nbilan passif\n",
+            "\npassif\n",
+            "bilan (passif)",
+            "bilan passif",
+            "bilan social",
+        ],
         "CPC": [
             "compte de produits et charges",
             "compte de produits et de charges",

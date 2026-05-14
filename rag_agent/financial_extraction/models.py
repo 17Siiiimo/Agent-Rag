@@ -90,6 +90,8 @@ class RetrievedPage:
     bm25_score: float = 0.0
     vector_score: float = 0.0
     target_anchor_score: float = 0.0
+    scope_signature_score: float = 0.0
+    opposite_scope_signature_score: float = 0.0
     scope_score: float = 0.0
     sector_score: float = 0.0
     title_score: float = 0.0
@@ -103,6 +105,8 @@ class RetrievedPage:
             "bm25_score": self.bm25_score,
             "vector_score": self.vector_score,
             "target_anchor_score": self.target_anchor_score,
+            "scope_signature_score": self.scope_signature_score,
+            "opposite_scope_signature_score": self.opposite_scope_signature_score,
             "scope_score": self.scope_score,
             "sector_score": self.sector_score,
             "title_score": self.title_score,
